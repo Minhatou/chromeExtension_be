@@ -1,0 +1,95 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.pyc
+
+# ─── Virtual Environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# ─── Environment Variables / Secrets ──────────────────────────────────────────
+*.env
+.env.*
+!.env.example
+config.local.*
+secrets.*
+
+# ─── ML Models & Weights ──────────────────────────────────────────────────────
+# Large model files — download via download_model.py instead
+models/
+*.bin
+*.safetensors
+*.gguf
+*.ggml
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.h5
+*.onnx
+
+# ─── Training Outputs ─────────────────────────────────────────────────────────
+checkpoints/
+runs/
+outputs/
+logs/
+wandb/
+mlruns/
+*.log
+
+# ─── Data ─────────────────────────────────────────────────────────────────────
+# Keep the data/ folder tracked but ignore large / raw files inside it
+data/*.jsonl
+data/*.csv
+data/*.parquet
+data/*.arrow
+data/*.bin
+data/raw/
+data/processed/
+
+# ─── Flask / Web ──────────────────────────────────────────────────────────────
+instance/
+*.db
+*.sqlite3
+
+# ─── Distribution / Build ─────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+*.egg
+
+# ─── Testing & Coverage ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+nosetests.xml
+
+# ─── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── IDEs ─────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig

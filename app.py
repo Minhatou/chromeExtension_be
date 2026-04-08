@@ -47,7 +47,18 @@ def translate():
             return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Initialize the model prior to app startup or lazily during first request
-    # print("Loading model...")
-    # model, tokenizer = load_model()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # ── Model config ──────────────────────────────────────────────────────
+    BASE_MODEL_PATH   = "./models/llama-3.2-1b-instruct"
+    # Set to adapter path after training, or None to use the base model only:
+    LORA_WEIGHTS_PATH = None
+    # LORA_WEIGHTS_PATH = "./models/lora-adapter"
+    # ─────────────────────────────────────────────────────────────────────
+
+    print("Loading model, please wait...")
+    model, tokenizer = load_model(
+        base_model_name=BASE_MODEL_PATH,
+        lora_weights_path=LORA_WEIGHTS_PATH,
+    )
+    print("Model loaded. Starting Flask server...")
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
