@@ -18,7 +18,17 @@ except Exception as e:
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+@app.before_request
+def handle_preflight():
+    if request.method == 'OPTIONS':
+        res = app.make_response('')
+        res.headers['Access-Control-Allow-Origin'] = '*'
+        res.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        res.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        res.status_code = 200
+        return res
 
 # Global variables to hold model and tokenizer
 model = None
@@ -337,6 +347,222 @@ def verify_token():
         return jsonify({"valid": False, "error": "Token expired"}), 401
     except Exception as e:
         return jsonify({"valid": False, "error": str(e)}), 401
+
+
+# ── Admin Middleware ──────────────────────────────────────────────────────────
+
+def require_admin(uid):
+    """Returns True if uid belongs to an admin user, raises otherwise."""
+    if not uid:
+        return False
+    try:
+        user = fb_auth.get_user(uid)
+        return (user.custom_claims or {}).get("role") == "admin"
+    except Exception:
+        return False
+
+# ── Admin Routes ──────────────────────────────────────────────────────────────
+
+@app.route('/api/admin/users', methods=['POST'])
+def admin_list_users():
+    uid = request.json.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    try:
+        users = []
+        page = fb_auth.list_users()
+        while page:
+            for u in page.users:
+                users.append({
+                    "uid": u.uid,
+                    "email": u.email or "",
+                    "role": (u.custom_claims or {}).get("role", "user"),
+                    "disabled": u.disabled,
+                    "created": u.user_metadata.creation_timestamp if u.user_metadata else None
+                })
+            page = page.get_next_page()
+        return jsonify({"users": users})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/users/role', methods=['POST'])
+def admin_set_role():
+    data = request.json
+    uid = data.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    target_uid = data.get('target_uid')
+    new_role = data.get('role')  # 'admin' | 'user'
+    if not target_uid or new_role not in ('admin', 'user'):
+        return jsonify({"error": "Missing target_uid or invalid role"}), 400
+    try:
+        existing = fb_auth.get_user(target_uid)
+        claims = dict(existing.custom_claims or {})
+        claims['role'] = new_role
+        fb_auth.set_custom_user_claims(target_uid, claims)
+        return jsonify({"success": True, "uid": target_uid, "role": new_role})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/history', methods=['POST'])
+def admin_get_history():
+    uid = request.json.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    def _serialize(docs):
+        logs = []
+        for doc in docs:
+            d = doc.to_dict()
+            d['id'] = doc.id
+            ts = d.get('timestamp')
+            d['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
+            logs.append(d)
+        return logs
+
+    try:
+        docs = db.collection("translation_logs") \
+                 .order_by("timestamp", direction=firestore.Query.DESCENDING) \
+                 .limit(200).stream()
+        logs = _serialize(docs)
+        print(f"[ADMIN] Fetched {len(logs)} translation logs (ordered)")
+        return jsonify({"history": logs})
+    except Exception as e:
+        print(f"[ADMIN] order_by failed ({e}), retrying without sort...")
+        try:
+            docs = db.collection("translation_logs").limit(200).stream()
+            logs = _serialize(docs)
+            print(f"[ADMIN] Fetched {len(logs)} translation logs (unordered fallback)")
+            return jsonify({"history": logs})
+        except Exception as e2:
+            print(f"[ADMIN] translation_logs fetch failed: {e2}")
+            return jsonify({"error": str(e2)}), 500
+
+
+@app.route('/api/admin/history/delete', methods=['POST'])
+def admin_delete_history():
+    data = request.json
+    uid = data.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    doc_id = data.get('doc_id')
+    if not doc_id:
+        return jsonify({"error": "Missing doc_id"}), 400
+    try:
+        db.collection("translation_logs").document(doc_id).delete()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/history/clear', methods=['POST'])
+def admin_clear_history():
+    uid = request.json.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    try:
+        docs = db.collection("translation_logs").stream()
+        batch = db.batch()
+        count = 0
+        for doc in docs:
+            batch.delete(doc.reference)
+            count += 1
+            if count % 500 == 0:
+                batch.commit()
+                batch = db.batch()
+        if count % 500 != 0:
+            batch.commit()
+        return jsonify({"success": True, "deleted": count})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/glossary', methods=['POST'])
+def admin_get_glossary():
+    uid = request.json.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    try:
+        docs = db.collection("system_glossary").stream()
+        terms = []
+        for doc in docs:
+            d = doc.to_dict()
+            d['id'] = doc.id
+            terms.append(d)
+        return jsonify({"glossary": terms})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/glossary/add', methods=['POST'])
+def admin_add_glossary():
+    data = request.json
+    uid = data.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    term = data.get('term', '').strip()
+    meaning = data.get('meaning', '').strip()
+    context = data.get('context', '').strip()
+    if not term or not meaning:
+        return jsonify({"error": "Missing term or meaning"}), 400
+    try:
+        entry = {"term": term, "meaning": meaning, "context": context,
+                 "timestamp": firestore.SERVER_TIMESTAMP}
+        _, ref = db.collection("system_glossary").add(entry)
+        return jsonify({"success": True, "id": ref.id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/glossary/update', methods=['POST'])
+def admin_update_glossary():
+    data = request.json
+    uid = data.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    doc_id = data.get('id')
+    term = data.get('term', '').strip()
+    meaning = data.get('meaning', '').strip()
+    context = data.get('context', '').strip()
+    if not doc_id or not term or not meaning:
+        return jsonify({"error": "Missing id, term, or meaning"}), 400
+    try:
+        db.collection("system_glossary").document(doc_id).update(
+            {"term": term, "meaning": meaning, "context": context})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/glossary/delete', methods=['POST'])
+def admin_delete_glossary():
+    data = request.json
+    uid = data.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    doc_id = data.get('id')
+    if not doc_id:
+        return jsonify({"error": "Missing id"}), 400
+    try:
+        db.collection("system_glossary").document(doc_id).delete()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Status Route ──────────────────────────────────────────────────────────────

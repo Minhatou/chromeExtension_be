@@ -1,6 +1,5 @@
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import PeftModel
+import os
+import requests
 
 # Vietnamese diacritic characters for language detection
 VI_CHARS = set(
@@ -24,32 +23,45 @@ def detect_language(text: str) -> str:
 
 def load_model(base_model_name="./models/llama-3.2-1b-instruct", lora_weights_path=None):
     """
-    Load the base model and LoRA weights in full FP16 precision for RTX 3070Ti (8GB VRAM).
-    This avoids dequantization overhead and speeds up generation significantly.
+    Online model loader placeholder.
+    Reads HF_TOKEN from environment or .env file.
     """
-    print(f"Loading base model in FP16: {base_model_name}")
-
-    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_name,
-        torch_dtype=torch.float16,
-        device_map="auto",
-    )
-
-    if lora_weights_path:
-        print(f"Loading LoRA weights from: {lora_weights_path}")
-        model = PeftModel.from_pretrained(model, lora_weights_path)
-
-    model.eval()
-    return model, tokenizer
+    print("[INIT] Loading online model configurations...")
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        print("[INIT] HF_TOKEN not in environment, trying to read from .env file...")
+        try:
+            with open(".env", "r") as f:
+                for line in f:
+                    if line.startswith("HF_TOKEN="):
+                        hf_token = line.strip().split("=", 1)[1]
+                        print("[INIT] Found HF_TOKEN in .env file.")
+        except Exception as e:
+            print(f"[INIT WARNING] Failed to read .env file: {e}")
+            pass
+    else:
+        print("[INIT] Found HF_TOKEN in environment variables.")
+    
+    if not hf_token:
+        print("[INIT WARNING] HF_TOKEN is empty! API requests will be unauthorized and heavily rate-limited.")
+        hf_token = ""
+    else:
+        masked = hf_token[:8] + "..." + hf_token[-4:] if len(hf_token) > 12 else "..."
+        print(f"[INIT] Loaded HF_TOKEN successfully (Masked: {masked})")
+    
+    print("[INIT] Configured online model: Qwen/Qwen2.5-1.5B-Instruct hosted on Hugging Face API.")
+    return "online_model", hf_token
 
 
 def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both"):
     """
-    Translate text with auto language detection (EN->VI or VI->EN), explain IT terms, or summarize text.
-    target_lang: 'auto' | 'vietnamese' | 'english' | 'explain' | 'summarize'
+    Translate text using Qwen/Qwen2.5-1.5B-Instruct hosted on Hugging Face Serverless Inference API.
     """
+    import time
+    
+    # model here acts as a dummy/config, tokenizer contains our hf_token
+    hf_token = tokenizer
+    
     # Rule A: Direct Selection Match (only if not in explain or summarize mode)
     if target_lang not in ("explain", "summarize") and glossary and glossary_mode in ("both", "direct"):
         normalized_glossary = {str(k).strip().lower(): str(v).strip() for k, v in glossary.items()}
@@ -152,32 +164,53 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         {"role": "user", "content": user_content}
     ]
     
-    # Apply Qwen2 chat template
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-    token_count = inputs['input_ids'].shape[1]
-    detected_src = detect_language(text)
-    print(f"  [MODEL] detected_src={detected_src} → target={target_lang}")
-    print(f"  [MODEL] input tokens: {token_count}")
+    # Call HF Serverless Inference API via Chat Router endpoint
+    url = "https://router.huggingface.co/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+        masked_token = hf_token[:8] + "..." + hf_token[-4:] if len(hf_token) > 12 else "..."
+        print(f"  [API CALL] Using Authorization Token: {masked_token}")
+    else:
+        print("  [API CALL WARNING] Calling API without HF_TOKEN Authorization headers!")
+        
+    payload = {
+        "model": "Qwen/Qwen2.5-1.5B-Instruct:featherless-ai",
+        "messages": messages,
+        "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
+        "temperature": 0.1,
+    }
     
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=1024 if target_lang in ("explain", "summarize") else 512,
-            do_sample=False,  # Switch to greedy decoding for fast, consistent results
-            repetition_penalty=1.1,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+    detected_src = detect_language(text)
+    print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
+    print(f"  [ONLINE MODEL] Request payload length: {len(str(payload))} characters.")
+    print(f"  [ONLINE MODEL] Calling endpoint: {url}")
+    
+    start_time = time.time()
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        elapsed = time.time() - start_time
+        print(f"  [ONLINE MODEL] HTTP status code: {response.status_code} (took {elapsed:.2f} seconds)")
+        
+        if response.status_code != 200:
+            print(f"  [ONLINE MODEL ERROR] Raw API Response: {response.text}")
+            raise Exception(f"Hugging Face API returned error status {response.status_code}: {response.text}")
+        
+        res_data = response.json()
+        result = res_data["choices"][0]["message"]["content"].strip()
+        print(f"  [ONLINE MODEL] Successful response. Token usage: {res_data.get('usage', 'N/A')}")
+    except Exception as e:
+        print(f"  [ONLINE MODEL EXCEPTION] {e}")
+        raise e
 
-    # Decode ONLY the newly generated tokens
-    generated_tokens = outputs[0][inputs['input_ids'].shape[1]:]
-    result = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
-    print(f"  [MODEL] raw output: {repr(result)}")
+    print(f"  [ONLINE MODEL] API output successfully parsed. Raw length: {len(result)} chars.")
 
-    if target_lang == "explain":
+
+    if target_lang == "explain" and not result.startswith("1. Định nghĩa:"):
         return "1. Định nghĩa: " + result
-    elif target_lang == "summarize":
+    elif target_lang == "summarize" and not result.startswith("-"):
         return "- " + result
 
     # Cut off any English filler the model appends after the translation
@@ -197,5 +230,9 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             break
 
     # Return only the first non-empty line as a final safety fallback for translation
-    lines = [l.strip() for l in result.split("\n") if l.strip()]
-    return lines[0] if lines else result
+    if target_lang not in ("explain", "summarize"):
+        lines = [l.strip() for l in result.split("\n") if l.strip()]
+        return lines[0] if lines else result
+        
+    return result
+
