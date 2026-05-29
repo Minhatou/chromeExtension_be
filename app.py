@@ -988,13 +988,81 @@ def status():
     """Check if the API, model, and Firebase are running."""
     return jsonify({
         "status": "running",
-        "model_loaded": model is not None,
+        "model_loaded": len(loaded_models) > 0,
         "firebase_connected": db is not None
     })
+
+SEP = " ||| "   # Separator dùng trong batch translation
+
+@app.route('/api/translate/batch', methods=['POST'])
+def translate_batch():
+    """Batch translation: nhận mảng texts, dịch 1 lần, trả mảng kết quả.
+    Gom các đoạn lại bằng SEP, gọi model 1 lần duy nhất, tách kết quả về.
+    """
+    import time as _t
+    _start = _t.perf_counter()
+
+    data = request.json
+    if not data or 'texts' not in data:
+        return jsonify({"error": "Missing texts array"}), 400
+
+    texts = data['texts']  # list[str]
+    if not texts:
+        return jsonify({"translations": []}), 200
+
+    target_lang = data.get('target_lang', 'auto')
+    user_id     = data.get('user_id', 'anonymous')
+    glossary    = data.get('glossary', {})
+    glossary_mode = data.get('glossary_mode', 'both')
+    model_id    = data.get('model_id', 'qwen2')
+
+    if not user_id or user_id == 'anonymous':
+        return jsonify({"error": "Yêu cầu đăng nhập"}), 401
+
+    try:
+        model, tokenizer = get_model_and_tokenizer(model_id)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    # Gom tất cả đoạn thành 1 chuỗi, cách nhau bằng SEP
+    combined = SEP.join(t.strip() for t in texts)
+
+    print(f"\n[BATCH TRANSLATE] {len(texts)} segments, {len(combined)} chars total")
+
+    with inference_lock:
+        try:
+            result = generate_translation(
+                model, tokenizer, combined, '',
+                target_lang, glossary, glossary_mode
+            )
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # Tách kết quả
+    parts = [p.strip() for p in result.split(SEP.strip())]
+
+    # Nếu model bỏ sót separator → fallback: trả nguyên chuỗi cho node đầu, blank cho còn lại
+    if len(parts) != len(texts):
+        print(f"[BATCH TRANSLATE] Separator mismatch: got {len(parts)}, expected {len(texts)} — using raw split fallback")
+        # Cố chia đều theo số đoạn
+        parts = result.split('|||')
+        parts = [p.strip() for p in parts]
+        # Nếu vẫn lệch, pad hoặc truncate
+        if len(parts) < len(texts):
+            parts += [''] * (len(texts) - len(parts))
+        parts = parts[:len(texts)]
+
+    elapsed = _t.perf_counter() - _start
+    print(f"[BATCH TRANSLATE] Done in {elapsed:.2f}s for {len(texts)} segments")
+
+    return jsonify({"translations": parts, "elapsed": round(elapsed, 2)})
+
 
 @app.route('/api/translate', methods=['POST'])
 def translate():
     """Endpoint to process context-aware translation (auto-detects EN↔VI) with credits and dynamic models."""
+    import time as _time_module
+    _request_start = _time_module.perf_counter()
     data = request.json
     if not data or 'text' not in data:
         return jsonify({"error": "No text provided"}), 400
@@ -1090,8 +1158,13 @@ def translate():
 
     with inference_lock:
         try:
+            _t0 = _time_module.perf_counter()
             translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode)
-            print(f"[TRANSLATE RESULT] {repr(translation)}\n")
+            _inference_elapsed = _time_module.perf_counter() - _t0
+            _total_elapsed = _time_module.perf_counter() - _request_start
+            _chars_per_sec = len(translation) / _inference_elapsed if _inference_elapsed > 0 else 0
+            print(f"[TRANSLATE RESULT] {repr(translation)}")
+            print(f"[TRANSLATE TIMING] total={_total_elapsed:.2f}s | inference={_inference_elapsed:.2f}s | overhead={_total_elapsed - _inference_elapsed:.2f}s | {len(text)} chars in → {len(translation)} chars out | {_chars_per_sec:.0f} chars/s\n")
             
             # Count output tokens
             if isinstance(tokenizer, str):
@@ -1140,6 +1213,43 @@ def translate():
             return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/ocr', methods=['POST'])
+def ocr_image():
+    """OCR an image sent as base64 and return extracted text."""
+    import base64 as _b64, io
+    from PIL import Image
+    import pytesseract
+
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+    data = request.json
+    if not data or 'image' not in data:
+        return jsonify({"error": "Missing image data"}), 400
+
+    image_b64 = data['image']
+    if ',' in image_b64:
+        image_b64 = image_b64.split(',', 1)[1]
+
+    try:
+        img_bytes = _b64.b64decode(image_b64)
+        img = Image.open(io.BytesIO(img_bytes))
+
+        try:
+            text = pytesseract.image_to_string(img, lang='eng+vie')
+        except pytesseract.TesseractError:
+            text = pytesseract.image_to_string(img, lang='eng')
+
+        text = text.strip()
+        if not text:
+            return jsonify({"error": "Không tìm thấy chữ trong ảnh"}), 422
+
+        print(f"[OCR] Extracted {len(text)} chars from image")
+        return jsonify({"text": text})
+    except Exception as e:
+        print(f"[OCR ERROR] {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/detect', methods=['POST'])
 def detect():
     """Lightweight endpoint to detect language without running inference."""
@@ -1166,28 +1276,21 @@ def rate_translation():
         return jsonify({"error": "Missing uid or source"}), 400
         
     try:
-        # Find the latest history entry with this source text and update it
+        # Fetch matching documents
         docs = db.collection("users").document(uid).collection("history")\
-                 .where("source", "==", source.strip())\
-                 .order_by("timestamp", direction=firestore.Query.DESCENDING).limit(1).stream()
+                 .where("source", "==", source.strip()).stream()
         
         found = False
         for doc in docs:
-            doc.reference.update({"rating": rating})
             found = True
-            break
-            
-        if not found:
-            # Fallback: if index is missing/not ready, just update without sorting
-            docs = db.collection("users").document(uid).collection("history")\
-                     .where("source", "==", source.strip()).limit(5).stream()
-            for doc in docs:
+            if rating == 'dislike':
+                doc.reference.delete()
+            else:
                 doc.reference.update({"rating": rating})
-                found = True
-                break
-                
+            
         return jsonify({"success": True, "found": found})
     except Exception as e:
+        print(f"[RATE TRANSLATION ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -1448,6 +1551,37 @@ def admin_list_models():
         return jsonify({"models": models})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/admin/transactions', methods=['POST'])
+def admin_list_transactions():
+    uid = request.json.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    try:
+        docs = db.collection("transactions").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(100).stream()
+        transactions = []
+        for doc in docs:
+            d = doc.to_dict()
+            d['id'] = doc.id
+            ts = d.get('timestamp')
+            d['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
+            transactions.append(d)
+        return jsonify({"transactions": transactions})
+    except Exception as e:
+        try:
+            docs = db.collection("transactions").limit(100).stream()
+            transactions = []
+            for doc in docs:
+                d = doc.to_dict()
+                d['id'] = doc.id
+                ts = d.get('timestamp')
+                d['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
+                transactions.append(d)
+            return jsonify({"transactions": transactions})
+        except Exception as e2:
+            return jsonify({"error": str(e2)}), 500
 
 @app.route('/api/admin/models/add', methods=['POST'])
 def admin_add_model():
