@@ -40,6 +40,48 @@ inference_lock = threading.Lock()
 
 # ── Firebase Helper Functions ─────────────────────────────────────────────────
 
+def get_or_init_user_tokens(user_id):
+    """Get or initialize user's token balance in Firestore. Defaults to 1,000,000 free tokens."""
+    if db is None or not user_id or user_id == "anonymous":
+        return 0
+    try:
+        user_ref = db.collection("users").document(user_id)
+        doc = user_ref.get()
+        if doc.exists:
+            data = doc.to_dict()
+            if "tokens_balance" in data:
+                return int(data["tokens_balance"])
+        
+        # If document or tokens_balance doesn't exist, initialize with 1,000,000 tokens
+        initial_balance = 1000000
+        user_ref.set({"tokens_balance": initial_balance}, merge=True)
+        print(f"  [FIREBASE] Initialized {initial_balance} tokens for: {user_id}")
+        return initial_balance
+    except Exception as e:
+        print(f"  [FIREBASE ERROR] Failed to load user tokens: {e}")
+        return 1000000 # Fallback default
+
+def deduct_user_tokens(user_id, amount):
+    """Deduct tokens from user's balance in Firestore."""
+    if db is None or not user_id or user_id == "anonymous":
+        return 0
+    try:
+        user_ref = db.collection("users").document(user_id)
+        doc = user_ref.get()
+        current_balance = 1000000
+        if doc.exists:
+            data = doc.to_dict()
+            if "tokens_balance" in data:
+                current_balance = int(data["tokens_balance"])
+        
+        new_balance = max(0, current_balance - amount)
+        user_ref.set({"tokens_balance": new_balance}, merge=True)
+        print(f"  [FIREBASE] Deducted {amount} tokens from: {user_id}. New balance: {new_balance}")
+        return new_balance
+    except Exception as e:
+        print(f"  [FIREBASE ERROR] Failed to deduct tokens: {e}")
+        return 0
+
 def get_user_glossary(user_id):
     """Load user's personal glossary from Firestore."""
     if db is None or not user_id or user_id == "anonymous":
@@ -72,6 +114,43 @@ def save_translation_log(user_id, source, result, task_type):
         })
     except Exception as e:
         print(f"  [FIREBASE ERROR] Failed to save log: {e}")
+
+def check_translation_cache(user_id, text):
+    """Check if a translation already exists in saved_translations or history (with no dislike)."""
+    if db is None or not user_id or user_id == "anonymous":
+        return None
+    try:
+        # 1. Check saved_translations
+        docs = db.collection("users").document(user_id).collection("saved_translations")\
+                 .where("source_text", "==", text.strip()).limit(1).stream()
+        for doc in docs:
+            data = doc.to_dict()
+            if "translated_text" in data:
+                print(f"  [CACHE HIT] Found translation in saved_translations: {data['translated_text']}")
+                return data["translated_text"]
+
+        # 2. Check history
+        docs = db.collection("users").document(user_id).collection("history")\
+                 .where("source", "==", text.strip()).stream()
+        latest_translation = None
+        latest_ts = None
+        for doc in docs:
+            data = doc.to_dict()
+            if data.get("rating") == "dislike":
+                print(f"  [CACHE BYPASS] Found a disliked translation of this text. Bypassing cache.")
+                return None
+            ts = data.get("timestamp")
+            if "target" in data:
+                if latest_ts is None or (ts and ts > latest_ts):
+                    latest_ts = ts
+                    latest_translation = data["target"]
+        
+        if latest_translation:
+            print(f"  [CACHE HIT] Found translation in history: {latest_translation}")
+        return latest_translation
+    except Exception as e:
+        print(f"  [CACHE ERROR] Failed to lookup cache: {e}")
+        return None
 
 # ── Glossary Routes ───────────────────────────────────────────────────────────
 
@@ -263,11 +342,17 @@ def login():
         user = fb_auth.get_user(uid)
         role = user.custom_claims.get("role", "user") if user.custom_claims else "user"
         
+        if role == "admin":
+            tokens_balance = -1
+        else:
+            tokens_balance = get_or_init_user_tokens(uid)
+        
         return jsonify({
             "uid": uid,
             "email": email,
             "role": role,
-            "idToken": id_token
+            "idToken": id_token,
+            "tokens_balance": tokens_balance
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -320,11 +405,14 @@ def register():
         uid = res_data.get("localId")
         id_token = res_data.get("idToken")
         
+        tokens_balance = get_or_init_user_tokens(uid)
+        
         return jsonify({
             "uid": uid,
             "email": email,
             "role": "user",
-            "idToken": id_token
+            "idToken": id_token,
+            "tokens_balance": tokens_balance
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -341,12 +429,63 @@ def verify_token():
         uid   = decoded.get("uid")
         email = decoded.get("email", "")
         role  = decoded.get("role", "user")   # Custom claim set by create_admin.py
-        print(f"[AUTH] Token verified: uid={uid} email={email} role={role}")
-        return jsonify({"valid": True, "uid": uid, "email": email, "role": role})
+        
+        if role == "admin":
+            tokens_balance = -1
+        else:
+            tokens_balance = get_or_init_user_tokens(uid)
+        
+        print(f"[AUTH] Token verified: uid={uid} email={email} role={role} tokens={tokens_balance}")
+        return jsonify({"valid": True, "uid": uid, "email": email, "role": role, "tokens_balance": tokens_balance})
     except fb_auth.ExpiredIdTokenError:
         return jsonify({"valid": False, "error": "Token expired"}), 401
     except Exception as e:
         return jsonify({"valid": False, "error": str(e)}), 401
+
+
+@app.route('/api/user/recharge', methods=['POST'])
+def recharge_tokens():
+    """Mock recharge tokens for users. Supports packages: basic, standard, premium."""
+    data = request.json
+    uid = data.get('uid')
+    package_id = data.get('package_id')  # 'basic' | 'standard' | 'premium'
+
+    if not uid:
+        return jsonify({"error": "Missing uid"}), 400
+    if not package_id:
+        return jsonify({"error": "Missing package_id"}), 400
+
+    packages = {
+        "basic": 100000,
+        "standard": 500000,
+        "premium": 2000000
+    }
+
+    if package_id not in packages:
+        return jsonify({"error": "Invalid package_id"}), 400
+
+    added_tokens = packages[package_id]
+    
+    try:
+        user_ref = db.collection("users").document(uid)
+        doc = user_ref.get()
+        current_balance = 1000000
+        if doc.exists:
+            data_dict = doc.to_dict()
+            if "tokens_balance" in data_dict:
+                current_balance = int(data_dict["tokens_balance"])
+        
+        new_balance = current_balance + added_tokens
+        user_ref.set({"tokens_balance": new_balance}, merge=True)
+        print(f"[RECHARGE SUCCESS] Added {added_tokens} tokens to: {uid}. New balance: {new_balance}")
+        return jsonify({
+            "success": True, 
+            "tokens_added": added_tokens, 
+            "tokens_balance": new_balance,
+            "message": f"Nạp thành công {added_tokens:,} tokens! Số dư mới: {new_balance:,}."
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Admin Middleware ──────────────────────────────────────────────────────────
@@ -595,13 +734,44 @@ def translate():
     glossary_mode = data.get('glossary_mode', 'both')  # 'both' | 'direct' | 'ai'
     user_id = data.get('user_id', 'anonymous')
 
+    if not user_id or user_id == 'anonymous':
+        return jsonify({"error": "Yêu cầu đăng nhập để sử dụng tính năng dịch thuật."}), 401
+
+    is_admin = require_admin(user_id)
+
+    # Count Qwen input tokens
+    input_tokens = len(tokenizer.encode(text))
+    
+    if not is_admin:
+        tokens_balance = get_or_init_user_tokens(user_id)
+        if tokens_balance < input_tokens:
+            return jsonify({
+                "error": "OUT_OF_TOKENS",
+                "message": "Bạn đã hết token dịch miễn phí. Vui lòng nạp thêm token để tiếp tục sử dụng.",
+                "tokens_balance": tokens_balance
+            }), 402
+    else:
+        tokens_balance = -1
+
     # If no glossary sent from client, auto-load from Firestore for logged-in users
-    if not glossary and user_id != 'anonymous':
+    if not glossary:
         glossary = get_user_glossary(user_id)
+
+    # Smart Cache Check - Skip inference if we already have this translation
+    if target_lang not in ('explain', 'summarize'):
+        cached_translation = check_translation_cache(user_id, text)
+        if cached_translation:
+            print(f"[TRANSLATE CACHE HIT] Returning cached translation: {repr(cached_translation)}\n")
+            return jsonify({
+                "translation": cached_translation,
+                "target_lang": target_lang,
+                "from_cache": True,
+                "tokens_balance": tokens_balance
+            })
 
     print(f"\n{'='*60}")
     print(f"[TRANSLATE REQUEST]")
-    print(f"  text ({len(text)} chars): {repr(text)}")
+    print(f"  text ({len(text)} chars, {input_tokens} Qwen tokens): {repr(text)}")
     print(f"  context ({len(context)} chars): {repr(context)}")
     print(f"  target_lang: {target_lang}")
     if glossary:
@@ -612,14 +782,31 @@ def translate():
         try:
             translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode)
             print(f"[TRANSLATE RESULT] {repr(translation)}\n")
+            
+            # Count Qwen output tokens
+            output_tokens = len(tokenizer.encode(translation))
+            total_cost = input_tokens + output_tokens
+            
+            if not is_admin:
+                # Deduct tokens from Firestore
+                new_balance = deduct_user_tokens(user_id, total_cost)
+            else:
+                total_cost = 0
+                new_balance = -1
+            
             # Save log to Firestore in background thread (non-blocking)
-            if user_id != 'anonymous':
-                threading.Thread(
-                    target=save_translation_log,
-                    args=(user_id, text, translation, target_lang),
-                    daemon=True
-                ).start()
-            return jsonify({"translation": translation, "target_lang": target_lang})
+            threading.Thread(
+                target=save_translation_log,
+                args=(user_id, text, translation, target_lang),
+                daemon=True
+            ).start()
+            
+            return jsonify({
+                "translation": translation, 
+                "target_lang": target_lang,
+                "tokens_consumed": total_cost,
+                "tokens_balance": new_balance
+            })
         except Exception as e:
             print(f"[TRANSLATE ERROR] {e}\n")
             return jsonify({"error": str(e)}), 500
@@ -635,9 +822,267 @@ def detect():
     lang = detect_language(data['text'])
     return jsonify({"language": lang})
 
+# ── Translation Rating & Evaluation Routes ────────────────────────────────────
+
+@app.route('/api/translate/rate', methods=['POST'])
+def rate_translation():
+    """Rate a translation (like/dislike) in user's history."""
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    data = request.json
+    uid = data.get('uid')
+    source = data.get('source')
+    rating = data.get('rating')  # 'like' | 'dislike' | None
+    
+    if not uid or not source:
+        return jsonify({"error": "Missing uid or source"}), 400
+        
+    try:
+        # Find the latest history entry with this source text and update it
+        docs = db.collection("users").document(uid).collection("history")\
+                 .where("source", "==", source.strip())\
+                 .order_by("timestamp", direction=firestore.Query.DESCENDING).limit(1).stream()
+        
+        found = False
+        for doc in docs:
+            doc.reference.update({"rating": rating})
+            found = True
+            break
+            
+        if not found:
+            # Fallback: if index is missing/not ready, just update without sorting
+            docs = db.collection("users").document(uid).collection("history")\
+                     .where("source", "==", source.strip()).limit(5).stream()
+            for doc in docs:
+                doc.reference.update({"rating": rating})
+                found = True
+                break
+                
+        return jsonify({"success": True, "found": found})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Saved Translations Routes ──────────────────────────────────────────────────
+
+@app.route('/api/saved_translations', methods=['POST'])
+def get_saved_translations():
+    """Fetch user's saved translations from Firestore."""
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    uid = request.json.get('uid')
+    if not uid:
+        return jsonify({"error": "Missing uid"}), 400
+    try:
+        docs = db.collection("users").document(uid).collection("saved_translations")\
+                 .order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
+        saved_list = []
+        for doc in docs:
+            data = doc.to_dict()
+            data['id'] = doc.id
+            ts = data.get('timestamp')
+            data['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
+            saved_list.append(data)
+        return jsonify({"saved_translations": saved_list})
+    except Exception as e:
+        # Fallback without sort if index not ready
+        try:
+            docs = db.collection("users").document(uid).collection("saved_translations").stream()
+            saved_list = []
+            for doc in docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                ts = data.get('timestamp')
+                data['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
+                saved_list.append(data)
+            return jsonify({"saved_translations": saved_list})
+        except Exception as e2:
+            return jsonify({"error": str(e2)}), 500
+
+@app.route('/api/saved_translations/add', methods=['POST'])
+def add_saved_translation():
+    """Save a translation with a note."""
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    data = request.json
+    uid = data.get('uid')
+    source_text = data.get('source_text')
+    translated_text = data.get('translated_text')
+    note = data.get('note', '')
+
+    if not uid or not source_text or not translated_text:
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    new_entry = {
+        "source_text": source_text.strip(),
+        "translated_text": translated_text.strip(),
+        "note": note,
+        "timestamp": firestore.SERVER_TIMESTAMP
+    }
+    try:
+        _, doc_ref = db.collection("users").document(uid).collection("saved_translations").add(new_entry)
+        new_entry['id'] = doc_ref.id
+        new_entry['timestamp'] = None
+        return jsonify({"success": True, "entry": new_entry})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/saved_translations/update_note', methods=['POST'])
+def update_saved_translation_note():
+    """Update note of a saved translation."""
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    data = request.json
+    uid = data.get('uid')
+    doc_id = data.get('id')
+    note = data.get('note', '')
+
+    if not uid or not doc_id:
+        return jsonify({"error": "Missing uid or id"}), 400
+    try:
+        db.collection("users").document(uid).collection("saved_translations").document(doc_id).update({"note": note})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/saved_translations/delete', methods=['POST'])
+def delete_saved_translation():
+    """Delete a saved translation."""
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    data = request.json
+    uid = data.get('uid')
+    doc_id = data.get('id')
+
+    if not uid or not doc_id:
+        return jsonify({"error": "Missing uid or id"}), 400
+    try:
+        db.collection("users").document(uid).collection("saved_translations").document(doc_id).delete()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Contributions Routes ────────────────────────────────────────────────────────
+
+@app.route('/api/translate/contribute', methods=['POST'])
+def contribute_translation():
+    """Contribute a translation to the global contributions database."""
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    data = request.json
+    uid = data.get('uid', 'anonymous')
+    email = data.get('email', 'anonymous')
+    source_text = data.get('source_text')
+    original_translation = data.get('original_translation')
+    suggested_translation = data.get('suggested_translation')
+
+    if not source_text or not suggested_translation:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    new_contribution = {
+        "user_id": uid,
+        "email": email,
+        "source_text": source_text.strip(),
+        "original_translation": original_translation.strip() if original_translation else "",
+        "suggested_translation": suggested_translation.strip(),
+        "timestamp": firestore.SERVER_TIMESTAMP,
+        "status": "pending"  # 'pending' | 'approved' | 'rejected'
+    }
+    try:
+        _, doc_ref = db.collection("contributions").add(new_contribution)
+        
+        # Mark history entry as contributed
+        if uid and uid != 'anonymous':
+            try:
+                docs = db.collection("users").document(uid).collection("history")\
+                         .where("source", "==", source_text.strip()).limit(5).stream()
+                for doc in docs:
+                    doc.reference.update({"is_contributed": True})
+            except Exception as hist_err:
+                print(f"[CONTRIBUTE] Failed to mark history entry: {hist_err}")
+
+        return jsonify({"success": True, "id": doc_ref.id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/admin/contributions', methods=['POST'])
+def admin_get_contributions():
+    uid = request.json.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    try:
+        docs = db.collection("contributions")\
+                 .order_by("timestamp", direction=firestore.Query.DESCENDING).limit(100).stream()
+        contributions = []
+        for doc in docs:
+            d = doc.to_dict()
+            d['id'] = doc.id
+            ts = d.get('timestamp')
+            d['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
+            contributions.append(d)
+        return jsonify({"contributions": contributions})
+    except Exception as e:
+        # Fallback without sorting
+        try:
+            docs = db.collection("contributions").limit(100).stream()
+            contributions = []
+            for doc in docs:
+                d = doc.to_dict()
+                d['id'] = doc.id
+                ts = d.get('timestamp')
+                d['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
+                contributions.append(d)
+            return jsonify({"contributions": contributions})
+        except Exception as e2:
+            return jsonify({"error": str(e2)}), 500
+
+@app.route('/api/admin/contributions/action', methods=['POST'])
+def admin_contribution_action():
+    data = request.json
+    uid = data.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    
+    contrib_id = data.get('id')
+    action = data.get('action')  # 'approved' | 'rejected' | 'delete'
+    if not contrib_id or not action:
+        return jsonify({"error": "Missing id or action"}), 400
+        
+    try:
+        ref = db.collection("contributions").document(contrib_id)
+        if action == 'delete':
+            ref.delete()
+        else:
+            ref.update({"status": action})
+            
+            # If approved, add it to system glossary
+            if action == 'approved':
+                contrib_doc = ref.get()
+                if contrib_doc.exists:
+                    cdata = contrib_doc.to_dict()
+                    term = cdata.get("source_text", "").strip()
+                    meaning = cdata.get("suggested_translation", "").strip()
+                    if term and meaning:
+                        db.collection("system_glossary").add({
+                            "term": term,
+                            "meaning": meaning,
+                            "context": f"Đóng góp từ {cdata.get('email', 'User')}",
+                            "timestamp": firestore.SERVER_TIMESTAMP
+                        })
+                        
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     # ── Model config ──────────────────────────────────────────────────────
-    BASE_MODEL_PATH   = r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\saves\train_qwen_2000cau"
+    BASE_MODEL_PATH   = r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278"
     # Set to adapter path after training, or None to use the base model only:
     LORA_WEIGHTS_PATH = None
     # ─────────────────────────────────────────────────────────────────────

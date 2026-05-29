@@ -21,36 +21,51 @@ def detect_language(text: str) -> str:
     return 'vietnamese' if any(c in VI_CHARS for c in text) else 'english'
 
 
-def load_model(base_model_name="./models/llama-3.2-1b-instruct", lora_weights_path=None):
+def load_model(base_model_name=r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278", lora_weights_path=None):
     """
-    Online model loader placeholder.
-    Reads HF_TOKEN from environment or .env file.
+    Load model locally with 4-bit quantization for GPU VRAM efficiency.
+    Falls back to online model configurations on failure.
     """
-    print("[INIT] Loading online model configurations...")
-    hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token:
-        print("[INIT] HF_TOKEN not in environment, trying to read from .env file...")
-        try:
-            with open(".env", "r") as f:
-                for line in f:
-                    if line.startswith("HF_TOKEN="):
-                        hf_token = line.strip().split("=", 1)[1]
-                        print("[INIT] Found HF_TOKEN in .env file.")
-        except Exception as e:
-            print(f"[INIT WARNING] Failed to read .env file: {e}")
-            pass
-    else:
-        print("[INIT] Found HF_TOKEN in environment variables.")
-    
-    if not hf_token:
-        print("[INIT WARNING] HF_TOKEN is empty! API requests will be unauthorized and heavily rate-limited.")
-        hf_token = ""
-    else:
-        masked = hf_token[:8] + "..." + hf_token[-4:] if len(hf_token) > 12 else "..."
-        print(f"[INIT] Loaded HF_TOKEN successfully (Masked: {masked})")
-    
-    print("[INIT] Configured online model: Qwen/Qwen2.5-1.5B-Instruct hosted on Hugging Face API.")
-    return "online_model", hf_token
+    print(f"[INIT] Attempting to load local model from: {base_model_name}...")
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        from peft import PeftModel
+        
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+            trust_remote_code=True
+        )
+        if lora_weights_path:
+            print(f"[INIT] Loading LoRA weights from: {lora_weights_path}")
+            model = PeftModel.from_pretrained(model, lora_weights_path)
+            
+        model.eval()
+        print("[INIT] Local model loaded successfully!")
+        return model, tokenizer
+    except Exception as local_err:
+        print(f"[INIT WARNING] Failed to load local model: {local_err}")
+        print("[INIT] Falling back to online Hugging Face API configurations...")
+        
+        hf_token = os.environ.get("HF_TOKEN")
+        if not hf_token:
+            try:
+                with open(".env", "r") as f:
+                    for line in f:
+                        if line.startswith("HF_TOKEN="):
+                            hf_token = line.strip().split("=", 1)[1]
+            except Exception:
+                pass
+        return "online_model", hf_token
 
 
 def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both"):
@@ -159,51 +174,83 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             f"Instruction: {lang_instruction}\n"
             f"Result:"
         )
+    # Format as a Qwen2 chat template string manually
+    prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_content}<|im_end|>\n<|im_start|>assistant\n"
+    
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content}
     ]
     
-    # Call HF Serverless Inference API via Chat Router endpoint
-    url = "https://router.huggingface.co/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json"
-    }
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
-        masked_token = hf_token[:8] + "..." + hf_token[-4:] if len(hf_token) > 12 else "..."
-        print(f"  [API CALL] Using Authorization Token: {masked_token}")
+    if model == "online_model":
+        # Call HF Serverless Inference API via Chat completions router (DNS resolvable in this environment)
+        url = "https://router.huggingface.co/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json"
+        }
+        if hf_token:
+            headers["Authorization"] = f"Bearer {hf_token}"
+            masked_token = hf_token[:8] + "..." + hf_token[-4:] if len(hf_token) > 12 else "..."
+            print(f"  [API CALL] Using Authorization Token: {masked_token}")
+        else:
+            print("  [API CALL WARNING] Calling API without HF_TOKEN Authorization headers!")
+            
+        payload = {
+            "model": "minhatou/qwen2",
+            "messages": messages,
+            "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
+            "temperature": 0.1
+        }
+        
+        detected_src = detect_language(text)
+        print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
+        print(f"  [ONLINE MODEL] Calling minhatou/qwen2 via router.huggingface.co chat completions...")
+        
+        start_time = time.time()
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            elapsed = time.time() - start_time
+            print(f"  [ONLINE MODEL] HTTP status code: {response.status_code} (took {elapsed:.2f} seconds)")
+            
+            if response.status_code != 200:
+                print(f"  [ONLINE MODEL ERROR] Raw API Response: {response.text}")
+                raise Exception(f"Hugging Face API returned error status {response.status_code}: {response.text}")
+            
+            res_data = response.json()
+            result = res_data["choices"][0]["message"]["content"].strip()
+            print(f"  [ONLINE MODEL] Successful response. Output length: {len(result)} chars.")
+        except Exception as e:
+            import traceback
+            print("  [ONLINE MODEL EXCEPTION] Traceback:")
+            traceback.print_exc()
+            raise e
     else:
-        print("  [API CALL WARNING] Calling API without HF_TOKEN Authorization headers!")
-        
-    payload = {
-        "model": "Qwen/Qwen2.5-1.5B-Instruct:featherless-ai",
-        "messages": messages,
-        "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
-        "temperature": 0.1,
-    }
-    
-    detected_src = detect_language(text)
-    print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
-    print(f"  [ONLINE MODEL] Request payload length: {len(str(payload))} characters.")
-    print(f"  [ONLINE MODEL] Calling endpoint: {url}")
-    
-    start_time = time.time()
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        elapsed = time.time() - start_time
-        print(f"  [ONLINE MODEL] HTTP status code: {response.status_code} (took {elapsed:.2f} seconds)")
-        
-        if response.status_code != 200:
-            print(f"  [ONLINE MODEL ERROR] Raw API Response: {response.text}")
-            raise Exception(f"Hugging Face API returned error status {response.status_code}: {response.text}")
-        
-        res_data = response.json()
-        result = res_data["choices"][0]["message"]["content"].strip()
-        print(f"  [ONLINE MODEL] Successful response. Token usage: {res_data.get('usage', 'N/A')}")
-    except Exception as e:
-        print(f"  [ONLINE MODEL EXCEPTION] {e}")
-        raise e
+        # Local model inference using PyTorch and Transformers
+        import torch
+        start_time = time.time()
+        print(f"  [LOCAL MODEL] detected_src={detect_language(text)} → target={target_lang}")
+        print(f"  [LOCAL MODEL] Running local inference via GPU...")
+        try:
+            inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+            max_new = 1024 if target_lang in ("explain", "summarize") else 512
+            with torch.no_grad():
+                out = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new,
+                    temperature=0.1,
+                    do_sample=False,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+            # Decode generated output (excluding the input prompt tokens)
+            input_len = inputs.input_ids.shape[1]
+            result = tokenizer.decode(out[0][input_len:], skip_special_tokens=True).strip()
+            elapsed = time.time() - start_time
+            print(f"  [LOCAL MODEL] Inference successful (took {elapsed:.2f} seconds). Output length: {len(result)} chars.")
+        except Exception as e:
+            import traceback
+            print("  [LOCAL MODEL EXCEPTION] Traceback:")
+            traceback.print_exc()
+            raise e
 
     print(f"  [ONLINE MODEL] API output successfully parsed. Raw length: {len(result)} chars.")
 
