@@ -114,6 +114,7 @@ def get_or_init_user_credits(user_id):
         purchased_credit = 0.0
         last_reset_date = today_str
         theme = "light"
+        share_translation = False
         
         if doc.exists:
             data = doc.to_dict()
@@ -121,6 +122,7 @@ def get_or_init_user_credits(user_id):
             purchased_credit = float(data.get("purchased_credit", 0.0))
             last_reset_date = data.get("last_credit_reset_date", "")
             theme = data.get("theme", "light")
+            share_translation = data.get("share_translation", False)
             
             # Check for daily reset
             if last_reset_date != today_str:
@@ -137,7 +139,8 @@ def get_or_init_user_credits(user_id):
                 "free_credit": free_credit,
                 "purchased_credit": purchased_credit,
                 "last_credit_reset_date": today_str,
-                "theme": theme
+                "theme": theme,
+                "share_translation": share_translation
             })
             print(f"  [FIREBASE] Initialized user credits for: {user_id}")
             
@@ -145,11 +148,12 @@ def get_or_init_user_credits(user_id):
             "free_credit": free_credit,
             "purchased_credit": purchased_credit,
             "total_credit": free_credit + purchased_credit,
-            "theme": theme
+            "theme": theme,
+            "share_translation": share_translation
         }
     except Exception as e:
         print(f"  [FIREBASE ERROR] Failed to load/reset user credits: {e}")
-        return {"free_credit": 100000.0, "purchased_credit": 0.0, "total_credit": 100000.0}
+        return {"free_credit": 100000.0, "purchased_credit": 0.0, "total_credit": 100000.0, "theme": "light", "share_translation": False}
 
 def deduct_user_credits(user_id, amount_vnd):
     """Deduct credit (VND) from user's balance in Firestore, prioritizing free credit first."""
@@ -217,20 +221,21 @@ def save_user_private_history(user_id, source, target):
     except Exception as e:
         print(f"  [FIREBASE ERROR] Failed to save private user history: {e}")
 
-def save_translation_log(user_id, source, result, task_type):
-    """Save translation log to Firestore asynchronously."""
+def save_translation_log(source, result, task_type, model_id):
+    """Save translation log to Firestore asynchronously and anonymously."""
     if db is None:
         return
     try:
         db.collection("translation_logs").add({
-            "user_id": user_id,
             "source_text": source,
             "translated_text": result,
             "type": task_type,
+            "model_id": model_id,
             "timestamp": firestore.SERVER_TIMESTAMP
         })
+        print(f"  [FIREBASE] Saved anonymous translation log to translation_logs successfully!")
     except Exception as e:
-        print(f"  [FIREBASE ERROR] Failed to save log: {e}")
+        print(f"  [FIREBASE ERROR] Failed to save anonymous log: {e}")
 
 def check_translation_cache(user_id, text):
     """Check if a translation already exists in saved_translations or history (with no dislike)."""
@@ -681,7 +686,8 @@ def verify_token():
             "free_credit": credits["free_credit"],
             "purchased_credit": credits["purchased_credit"],
             "total_credit": credits["total_credit"],
-            "theme": credits.get("theme", "light") if role != "admin" else "light"
+            "theme": credits.get("theme", "light") if role != "admin" else "light",
+            "share_translation": credits.get("share_translation", False) if role != "admin" else False
         })
     except fb_auth.ExpiredIdTokenError:
         return jsonify({"valid": False, "error": "Token expired"}), 401
@@ -703,6 +709,24 @@ def update_user_theme():
         user_ref = db.collection("user_info").document(uid)
         user_ref.set({"theme": theme}, merge=True)
         return jsonify({"success": True, "theme": theme})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/user/share_translation', methods=['POST'])
+def update_user_share_translation():
+    """Update user's share translation preference in Firestore."""
+    data = request.json
+    uid = data.get('uid')
+    share = data.get('share_translation', False)
+    
+    if not uid:
+        return jsonify({"error": "Missing uid"}), 400
+        
+    try:
+        user_ref = db.collection("user_info").document(uid)
+        user_ref.set({"share_translation": share}, merge=True)
+        return jsonify({"success": True, "share_translation": share})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1190,11 +1214,11 @@ def translate():
                 daemon=True
             ).start()
 
-            # 2. Save log to admin translation_logs only if user agreed to share
+            # 2. Save log to admin translation_logs only if user agreed to share (anonymously)
             if share_translation:
                 threading.Thread(
                     target=save_translation_log,
-                    args=(user_id, text, translation, target_lang),
+                    args=(text, translation, target_lang, model_id),
                     daemon=True
                 ).start()
             
