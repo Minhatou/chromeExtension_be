@@ -7,11 +7,39 @@ import threading
 import firebase_admin
 from firebase_admin import credentials, firestore, auth as fb_auth
 
+def init_ai_models():
+    """Ensure default models are loaded into the AI_model collection in Firestore."""
+    if db is None:
+        return
+    try:
+        models_ref = db.collection("AI_model")
+        docs = models_ref.limit(1).get()
+        if len(docs) == 0:
+            print("[FIREBASE] Initializing default AI_model entries...")
+            models_ref.document("qwen2").set({
+                "model_id": "qwen2",
+                "name": "Qwen2-1.5b",
+                "path": r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278",
+                "input_price_1m": 5000.0,
+                "output_price_1m": 15000.0
+            })
+            models_ref.document("qwen3").set({
+                "model_id": "qwen3",
+                "name": "Qwen3-1.7b",
+                "path": r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen3-1.7b-7278",
+                "input_price_1m": 7000.0,
+                "output_price_1m": 21000.0
+            })
+            print("[FIREBASE] Default AI_model entries initialized successfully!")
+    except Exception as e:
+        print(f"[FIREBASE ERROR] Failed to initialize default AI_model entries: {e}")
+
 try:
     cred = credentials.Certificate("serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
     db = firestore.client()
     print("[FIREBASE] Connected to Cloud Firestore!")
+    init_ai_models()
 except Exception as e:
     print(f"[FIREBASE ERROR] {e}")
     db = None
@@ -30,57 +58,132 @@ def handle_preflight():
         res.status_code = 200
         return res
 
-# Global variables to hold model and tokenizer
-model = None
-tokenizer = None
+# Global dictionary to hold models and tokenizers dynamically
+loaded_models = {}
+loaded_tokenizers = {}
 
 # Thread lock to prevent concurrent VRAM usage and OOM errors during inference
 inference_lock = threading.Lock()
 
+def get_model_and_tokenizer(model_id):
+    """Dynamic thread-safe loader for Qwen2 and Qwen3 models."""
+    global loaded_models, loaded_tokenizers
+    
+    path = None
+    if db is not None:
+        try:
+            doc = db.collection("AI_model").document(model_id).get()
+            if doc.exists:
+                path = doc.to_dict().get("path")
+        except Exception as e:
+            print(f"[FIREBASE ERROR] Failed to fetch path for model {model_id}: {e}")
+            
+    if not path:
+        model_paths = {
+            "qwen2": r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278",
+            "qwen3": r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen3-1.7b-7278"
+        }
+        path = model_paths.get(model_id, model_paths["qwen2"])
+    
+    if model_id not in loaded_models:
+        print(f"[DYNAMIC LOAD] Loading model {model_id} from: {path}...")
+        m, t = load_model(base_model_name=path, lora_weights_path=None)
+        loaded_models[model_id] = m
+        loaded_tokenizers[model_id] = t
+        print(f"[DYNAMIC LOAD] Model {model_id} loaded successfully!")
+        
+    return loaded_models[model_id], loaded_tokenizers[model_id]
+
 
 # ── Firebase Helper Functions ─────────────────────────────────────────────────
 
-def get_or_init_user_tokens(user_id):
-    """Get or initialize user's token balance in Firestore. Defaults to 1,000,000 free tokens."""
+def get_or_init_user_credits(user_id):
+    """Get or initialize user's credits (VND) in Firestore. Defaults to 100,000đ free credit per day."""
     if db is None or not user_id or user_id == "anonymous":
-        return 0
+        return {"free_credit": 0.0, "purchased_credit": 0.0, "total_credit": 0.0}
     try:
-        user_ref = db.collection("users").document(user_id)
-        doc = user_ref.get()
-        if doc.exists:
-            data = doc.to_dict()
-            if "tokens_balance" in data:
-                return int(data["tokens_balance"])
-        
-        # If document or tokens_balance doesn't exist, initialize with 1,000,000 tokens
-        initial_balance = 1000000
-        user_ref.set({"tokens_balance": initial_balance}, merge=True)
-        print(f"  [FIREBASE] Initialized {initial_balance} tokens for: {user_id}")
-        return initial_balance
-    except Exception as e:
-        print(f"  [FIREBASE ERROR] Failed to load user tokens: {e}")
-        return 1000000 # Fallback default
+        import datetime
+        tz_delta = datetime.timezone(datetime.timedelta(hours=7)) # Vietnam time
+        now_vn = datetime.datetime.now(tz_delta)
+        today_str = now_vn.strftime("%Y-%m-%d")
 
-def deduct_user_tokens(user_id, amount):
-    """Deduct tokens from user's balance in Firestore."""
-    if db is None or not user_id or user_id == "anonymous":
-        return 0
-    try:
-        user_ref = db.collection("users").document(user_id)
+        user_ref = db.collection("user_info").document(user_id)
         doc = user_ref.get()
-        current_balance = 1000000
+        
+        free_credit = 100000.0
+        purchased_credit = 0.0
+        last_reset_date = today_str
+        theme = "light"
+        
         if doc.exists:
             data = doc.to_dict()
-            if "tokens_balance" in data:
-                current_balance = int(data["tokens_balance"])
-        
-        new_balance = max(0, current_balance - amount)
-        user_ref.set({"tokens_balance": new_balance}, merge=True)
-        print(f"  [FIREBASE] Deducted {amount} tokens from: {user_id}. New balance: {new_balance}")
-        return new_balance
+            free_credit = float(data.get("free_credit", 100000.0))
+            purchased_credit = float(data.get("purchased_credit", 0.0))
+            last_reset_date = data.get("last_credit_reset_date", "")
+            theme = data.get("theme", "light")
+            
+            # Check for daily reset
+            if last_reset_date != today_str:
+                print(f"  [FIREBASE] Daily reset triggered for {user_id}. {last_reset_date} -> {today_str}")
+                free_credit = 100000.0
+                last_reset_date = today_str
+                user_ref.set({
+                    "free_credit": free_credit,
+                    "last_credit_reset_date": today_str
+                }, merge=True)
+        else:
+            # Create user_info document
+            user_ref.set({
+                "free_credit": free_credit,
+                "purchased_credit": purchased_credit,
+                "last_credit_reset_date": today_str,
+                "theme": theme
+            })
+            print(f"  [FIREBASE] Initialized user credits for: {user_id}")
+            
+        return {
+            "free_credit": free_credit,
+            "purchased_credit": purchased_credit,
+            "total_credit": free_credit + purchased_credit,
+            "theme": theme
+        }
     except Exception as e:
-        print(f"  [FIREBASE ERROR] Failed to deduct tokens: {e}")
-        return 0
+        print(f"  [FIREBASE ERROR] Failed to load/reset user credits: {e}")
+        return {"free_credit": 100000.0, "purchased_credit": 0.0, "total_credit": 100000.0}
+
+def deduct_user_credits(user_id, amount_vnd):
+    """Deduct credit (VND) from user's balance in Firestore, prioritizing free credit first."""
+    if db is None or not user_id or user_id == "anonymous":
+        return {"free_credit": 0.0, "purchased_credit": 0.0, "total_credit": 0.0}
+    try:
+        user_ref = db.collection("user_info").document(user_id)
+        balances = get_or_init_user_credits(user_id)
+        
+        free = balances["free_credit"]
+        purchased = balances["purchased_credit"]
+        
+        if free >= amount_vnd:
+            free = max(0.0, free - amount_vnd)
+        else:
+            remainder = amount_vnd - free
+            free = 0.0
+            purchased = max(0.0, purchased - remainder)
+            
+        user_ref.set({
+            "free_credit": free,
+            "purchased_credit": purchased
+        }, merge=True)
+        
+        total = free + purchased
+        print(f"  [FIREBASE] Deducted {amount_vnd:.2f} VND from: {user_id}. New balance: {total:.2f} VND")
+        return {
+            "free_credit": free,
+            "purchased_credit": purchased,
+            "total_credit": total
+        }
+    except Exception as e:
+        print(f"  [FIREBASE ERROR] Failed to deduct credits: {e}")
+        return {"free_credit": 0.0, "purchased_credit": 0.0, "total_credit": 0.0}
 
 def get_user_glossary(user_id):
     """Load user's personal glossary from Firestore."""
@@ -99,6 +202,20 @@ def get_user_glossary(user_id):
         print(f"  [FIREBASE ERROR] Failed to load glossary: {e}")
         return {}
 
+
+def save_user_private_history(user_id, source, target):
+    """Save translation entry to user's private history in Firestore."""
+    if db is None or not user_id or user_id == "anonymous":
+        return
+    try:
+        db.collection("users").document(user_id).collection("history").add({
+            "source": source.strip(),
+            "target": target.strip(),
+            "time": "Vừa xong",
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+    except Exception as e:
+        print(f"  [FIREBASE ERROR] Failed to save private user history: {e}")
 
 def save_translation_log(user_id, source, result, task_type):
     """Save translation log to Firestore asynchronously."""
@@ -343,16 +460,19 @@ def login():
         role = user.custom_claims.get("role", "user") if user.custom_claims else "user"
         
         if role == "admin":
-            tokens_balance = -1
+            credits = {"free_credit": -1.0, "purchased_credit": -1.0, "total_credit": -1.0}
         else:
-            tokens_balance = get_or_init_user_tokens(uid)
+            credits = get_or_init_user_credits(uid)
         
         return jsonify({
             "uid": uid,
             "email": email,
             "role": role,
             "idToken": id_token,
-            "tokens_balance": tokens_balance
+            "free_credit": credits["free_credit"],
+            "purchased_credit": credits["purchased_credit"],
+            "total_credit": credits["total_credit"],
+            "theme": credits.get("theme", "light") if role != "admin" else "light"
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -405,16 +525,133 @@ def register():
         uid = res_data.get("localId")
         id_token = res_data.get("idToken")
         
-        tokens_balance = get_or_init_user_tokens(uid)
+        credits = get_or_init_user_credits(uid)
         
         return jsonify({
             "uid": uid,
             "email": email,
             "role": "user",
             "idToken": id_token,
-            "tokens_balance": tokens_balance
+            "free_credit": credits["free_credit"],
+            "purchased_credit": credits["purchased_credit"],
+            "total_credit": credits["total_credit"],
+            "theme": credits.get("theme", "light")
         })
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/auth/google')
+def google_auth_page():
+    """Serves a simple HTML page that uses Firebase Web SDK from CDN to do Google Sign-In with popup."""
+    import os
+    api_key = os.environ.get('FIREBASE_API_KEY')
+    if not api_key:
+        try:
+            with open(".env", "r") as f:
+                for line in f:
+                    if line.startswith("FIREBASE_API_KEY="):
+                        api_key = line.strip().split("=", 1)[1]
+        except Exception:
+            pass
+            
+    if not api_key:
+        api_key = "AIzaSyCjfMHgbOzSe7HUoebI2u2xvJVq_NY6aws"
+        
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Google Sign-In - IT Translator</title>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <style>
+        body {{
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: #121214;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }}
+        .spinner {{
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255,255,255,0.1);
+            border-left-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }}
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="spinner"></div>
+    <h3>Đang kết nối tài khoản Google...</h3>
+    <p style="color: #888; font-size: 14px;">Vui lòng hoàn tất đăng nhập ở cửa sổ popup tiếp theo.</p>
+
+    <script>
+        const firebaseConfig = {{
+            apiKey: "{api_key}",
+            authDomain: "doan-4ee1f.firebaseapp.com"
+        }};
+        firebase.initializeApp(firebaseConfig);
+
+        const provider = new firebase.auth.GoogleAuthProvider();
+        firebase.auth().signInWithPopup(provider)
+            .then(async (result) => {{
+                const idToken = await result.user.getIdToken();
+                window.opener.postMessage({{ type: 'GOOGLE_AUTH_SUCCESS', idToken: idToken }}, '*');
+                document.body.innerHTML = '<h3 style="color: #4cd137;">Đăng nhập thành công!</h3><p>Đang quay lại ứng dụng...</p>';
+                setTimeout(() => window.close(), 1000);
+            }})
+            .catch((error) => {{
+                window.opener.postMessage({{ type: 'GOOGLE_AUTH_ERROR', error: error.message }}, '*');
+                document.body.innerHTML = '<h3 style="color: #ff7675;">Đăng nhập thất bại</h3><p>' + error.message + '</p>';
+                setTimeout(() => window.close(), 3000);
+            }});
+    </script>
+</body>
+</html>
+"""
+
+@app.route('/api/auth/google', methods=['POST'])
+def google_login():
+    """Verify Firebase ID token obtained from Google Sign-In on client side."""
+    data = request.json
+    id_token = data.get('idToken', '')
+    if not id_token:
+        return jsonify({"error": "Missing idToken"}), 400
+    try:
+        decoded = fb_auth.verify_id_token(id_token)
+        uid = decoded.get("uid")
+        email = decoded.get("email", "")
+        
+        user = fb_auth.get_user(uid)
+        role = user.custom_claims.get("role", "user") if user.custom_claims and user.custom_claims.get("role") else "user"
+        
+        if role == "admin":
+            credits = {"free_credit": -1.0, "purchased_credit": -1.0, "total_credit": -1.0}
+        else:
+            credits = get_or_init_user_credits(uid)
+            
+        return jsonify({
+            "uid": uid,
+            "email": email,
+            "role": role,
+            "idToken": id_token,
+            "free_credit": credits["free_credit"],
+            "purchased_credit": credits["purchased_credit"],
+            "total_credit": credits["total_credit"],
+            "theme": credits.get("theme", "light") if role != "admin" else "light"
+        })
+    except Exception as e:
+        print(f"[FIREBASE GOOGLE LOGIN ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/auth/verify', methods=['POST'])
@@ -431,24 +668,52 @@ def verify_token():
         role  = decoded.get("role", "user")   # Custom claim set by create_admin.py
         
         if role == "admin":
-            tokens_balance = -1
+            credits = {"free_credit": -1.0, "purchased_credit": -1.0, "total_credit": -1.0}
         else:
-            tokens_balance = get_or_init_user_tokens(uid)
+            credits = get_or_init_user_credits(uid)
         
-        print(f"[AUTH] Token verified: uid={uid} email={email} role={role} tokens={tokens_balance}")
-        return jsonify({"valid": True, "uid": uid, "email": email, "role": role, "tokens_balance": tokens_balance})
+        print(f"[AUTH] Token verified: uid={uid} email={email} role={role} free={credits['free_credit']} purchased={credits['purchased_credit']}")
+        return jsonify({
+            "valid": True,
+            "uid": uid,
+            "email": email,
+            "role": role,
+            "free_credit": credits["free_credit"],
+            "purchased_credit": credits["purchased_credit"],
+            "total_credit": credits["total_credit"],
+            "theme": credits.get("theme", "light") if role != "admin" else "light"
+        })
     except fb_auth.ExpiredIdTokenError:
         return jsonify({"valid": False, "error": "Token expired"}), 401
     except Exception as e:
         return jsonify({"valid": False, "error": str(e)}), 401
 
 
+@app.route('/api/user/theme', methods=['POST'])
+def update_user_theme():
+    """Update user's preferred theme (light/dark) in Firestore."""
+    data = request.json
+    uid = data.get('uid')
+    theme = data.get('theme', 'light')
+    
+    if not uid:
+        return jsonify({"error": "Missing uid"}), 400
+        
+    try:
+        user_ref = db.collection("user_info").document(uid)
+        user_ref.set({"theme": theme}, merge=True)
+        return jsonify({"success": True, "theme": theme})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/user/recharge', methods=['POST'])
 def recharge_tokens():
-    """Mock recharge tokens for users. Supports packages: basic, standard, premium."""
+    """Mock recharge credit (VND) for users. Supports packages: basic, standard, premium."""
     data = request.json
     uid = data.get('uid')
     package_id = data.get('package_id')  # 'basic' | 'standard' | 'premium'
+    payment_method = data.get('payment_method', 'qr')
 
     if not uid:
         return jsonify({"error": "Missing uid"}), 400
@@ -456,33 +721,45 @@ def recharge_tokens():
         return jsonify({"error": "Missing package_id"}), 400
 
     packages = {
-        "basic": 100000,
-        "standard": 500000,
-        "premium": 2000000
+        "basic": 50000.0,
+        "standard": 200000.0,
+        "premium": 500000.0
     }
 
     if package_id not in packages:
         return jsonify({"error": "Invalid package_id"}), 400
 
-    added_tokens = packages[package_id]
+    added_credit = packages[package_id]
     
     try:
-        user_ref = db.collection("users").document(uid)
+        user_ref = db.collection("user_info").document(uid)
         doc = user_ref.get()
-        current_balance = 1000000
+        purchased = 0.0
         if doc.exists:
             data_dict = doc.to_dict()
-            if "tokens_balance" in data_dict:
-                current_balance = int(data_dict["tokens_balance"])
+            purchased = float(data_dict.get("purchased_credit", 0.0))
         
-        new_balance = current_balance + added_tokens
-        user_ref.set({"tokens_balance": new_balance}, merge=True)
-        print(f"[RECHARGE SUCCESS] Added {added_tokens} tokens to: {uid}. New balance: {new_balance}")
+        new_purchased = purchased + added_credit
+        user_ref.set({"purchased_credit": new_purchased}, merge=True)
+        
+        # Save transaction log in database
+        db.collection("transactions").add({
+            "uid": uid,
+            "package_id": package_id,
+            "amount": added_credit,
+            "payment_method": payment_method,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+        
+        balances = get_or_init_user_credits(uid)
+        print(f"[RECHARGE SUCCESS] Added {added_credit} VND to: {uid}. New balance: {balances['total_credit']} VND")
         return jsonify({
             "success": True, 
-            "tokens_added": added_tokens, 
-            "tokens_balance": new_balance,
-            "message": f"Nạp thành công {added_tokens:,} tokens! Số dư mới: {new_balance:,}."
+            "credits_added": added_credit, 
+            "free_credit": balances["free_credit"],
+            "purchased_credit": balances["purchased_credit"],
+            "total_credit": balances["total_credit"],
+            "message": f"Nạp thành công {added_credit:,.0f} VNĐ! Số dư mới: {balances['total_credit']:,.0f} VNĐ."
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -717,12 +994,7 @@ def status():
 
 @app.route('/api/translate', methods=['POST'])
 def translate():
-    """Endpoint to process context-aware translation (auto-detects EN↔VI)."""
-    global model, tokenizer
-
-    if model is None or tokenizer is None:
-        return jsonify({"error": "Model not loaded"}), 500
-
+    """Endpoint to process context-aware translation (auto-detects EN↔VI) with credits and dynamic models."""
     data = request.json
     if not data or 'text' not in data:
         return jsonify({"error": "No text provided"}), 400
@@ -733,25 +1005,59 @@ def translate():
     glossary = data.get('glossary', {})
     glossary_mode = data.get('glossary_mode', 'both')  # 'both' | 'direct' | 'ai'
     user_id = data.get('user_id', 'anonymous')
+    model_id = data.get('model_id', 'qwen2') # 'qwen2' | 'qwen3'
+    share_translation = data.get('share_translation', False)
 
     if not user_id or user_id == 'anonymous':
         return jsonify({"error": "Yêu cầu đăng nhập để sử dụng tính năng dịch thuật."}), 401
 
     is_admin = require_admin(user_id)
 
-    # Count Qwen input tokens
-    input_tokens = len(tokenizer.encode(text))
+    # 1. Dynamic Model Load
+    try:
+        model, tokenizer = get_model_and_tokenizer(model_id)
+    except Exception as load_err:
+        return jsonify({"error": f"Failed to load model {model_id}: {str(load_err)}"}), 500
+
+    # 2. Dynamic Pricing Setup (VND per token) loaded from Firestore AI_model
+    model_pricing = {"input": 5000.0 / 1000000, "output": 15000.0 / 1000000}
+    if db is not None:
+        try:
+            doc = db.collection("AI_model").document(model_id).get()
+            if doc.exists:
+                d_dict = doc.to_dict()
+                model_pricing = {
+                    "input": float(d_dict.get("input_price_1m", 5000.0)) / 1000000,
+                    "output": float(d_dict.get("output_price_1m", 15000.0)) / 1000000
+                }
+        except Exception as e:
+            print(f"[FIREBASE ERROR] Failed to load dynamic model pricing for {model_id}: {e}")
+            
+    if model_id == "qwen3" and model_pricing["input"] == 5000.0 / 1000000:
+        # Fallback if DB doesn't have qwen3 yet
+        model_pricing = {"input": 7000.0 / 1000000, "output": 21000.0 / 1000000}
+
+    # 3. Input token calculation
+    if isinstance(tokenizer, str):
+        # Online model fallback
+        input_tokens = max(1, len(text.split()) * 2)
+    else:
+        input_tokens = len(tokenizer.encode(text))
     
+    # 4. Check Credit Limit
     if not is_admin:
-        tokens_balance = get_or_init_user_tokens(user_id)
-        if tokens_balance < input_tokens:
+        credits = get_or_init_user_credits(user_id)
+        est_input_cost = input_tokens * model_pricing["input"]
+        if credits["total_credit"] < est_input_cost:
             return jsonify({
                 "error": "OUT_OF_TOKENS",
-                "message": "Bạn đã hết token dịch miễn phí. Vui lòng nạp thêm token để tiếp tục sử dụng.",
-                "tokens_balance": tokens_balance
+                "message": f"Bạn đã hết credit dịch thuật (Số dư hiện tại: {credits['total_credit']:,.2f} VNĐ). Vui lòng nạp thêm credit để tiếp tục sử dụng.",
+                "free_credit": credits["free_credit"],
+                "purchased_credit": credits["purchased_credit"],
+                "total_credit": credits["total_credit"]
             }), 402
     else:
-        tokens_balance = -1
+        credits = {"free_credit": -1.0, "purchased_credit": -1.0, "total_credit": -1.0}
 
     # If no glossary sent from client, auto-load from Firestore for logged-in users
     if not glossary:
@@ -766,16 +1072,20 @@ def translate():
                 "translation": cached_translation,
                 "target_lang": target_lang,
                 "from_cache": True,
-                "tokens_balance": tokens_balance
+                "free_credit": credits["free_credit"],
+                "purchased_credit": credits["purchased_credit"],
+                "total_credit": credits["total_credit"]
             })
 
     print(f"\n{'='*60}")
     print(f"[TRANSLATE REQUEST]")
-    print(f"  text ({len(text)} chars, {input_tokens} Qwen tokens): {repr(text)}")
+    print(f"  text ({len(text)} chars, {input_tokens} {model_id} input tokens): {repr(text)}")
     print(f"  context ({len(context)} chars): {repr(context)}")
     print(f"  target_lang: {target_lang}")
     if glossary:
         print(f"  glossary ({len(glossary)} items): {list(glossary.keys())} (mode: {glossary_mode})")
+    print(f"  model_id: {model_id} (Input Price: {model_pricing['input']*1000000:.0f} VND / 1M, Output: {model_pricing['output']*1000000:.0f} VND / 1M)")
+    print(f"  share_translation: {share_translation}")
     print(f"{'='*60}")
 
     with inference_lock:
@@ -783,29 +1093,47 @@ def translate():
             translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode)
             print(f"[TRANSLATE RESULT] {repr(translation)}\n")
             
-            # Count Qwen output tokens
-            output_tokens = len(tokenizer.encode(translation))
-            total_cost = input_tokens + output_tokens
+            # Count output tokens
+            if isinstance(tokenizer, str):
+                output_tokens = max(1, len(translation.split()) * 2)
+            else:
+                output_tokens = len(tokenizer.encode(translation))
+                
+            cost_input = input_tokens * model_pricing["input"]
+            cost_output = output_tokens * model_pricing["output"]
+            total_cost_vnd = cost_input + cost_output
             
             if not is_admin:
-                # Deduct tokens from Firestore
-                new_balance = deduct_user_tokens(user_id, total_cost)
+                # Deduct credits
+                new_balances = deduct_user_credits(user_id, total_cost_vnd)
             else:
-                total_cost = 0
-                new_balance = -1
+                total_cost_vnd = 0.0
+                new_balances = {"free_credit": -1.0, "purchased_credit": -1.0, "total_credit": -1.0}
             
-            # Save log to Firestore in background thread (non-blocking)
+            # 1. Always save to user's private history for dashboard access and caching
             threading.Thread(
-                target=save_translation_log,
-                args=(user_id, text, translation, target_lang),
+                target=save_user_private_history,
+                args=(user_id, text, translation),
                 daemon=True
             ).start()
+
+            # 2. Save log to admin translation_logs only if user agreed to share
+            if share_translation:
+                threading.Thread(
+                    target=save_translation_log,
+                    args=(user_id, text, translation, target_lang),
+                    daemon=True
+                ).start()
             
             return jsonify({
                 "translation": translation, 
                 "target_lang": target_lang,
-                "tokens_consumed": total_cost,
-                "tokens_balance": new_balance
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_vnd": total_cost_vnd,
+                "free_credit": new_balances["free_credit"],
+                "purchased_credit": new_balances["purchased_credit"],
+                "total_credit": new_balances["total_credit"]
             })
         except Exception as e:
             print(f"[TRANSLATE ERROR] {e}\n")
@@ -1080,18 +1408,103 @@ def admin_contribution_action():
         return jsonify({"error": str(e)}), 500
 
 
-if __name__ == '__main__':
-    # ── Model config ──────────────────────────────────────────────────────
-    BASE_MODEL_PATH   = r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278"
-    # Set to adapter path after training, or None to use the base model only:
-    LORA_WEIGHTS_PATH = None
-    # ─────────────────────────────────────────────────────────────────────
+@app.route('/api/models', methods=['GET'])
+def list_models_public():
+    """List all available models dynamically for standard users dropdown."""
+    if db is None:
+        return jsonify({"models": [
+            {"model_id": "qwen2", "name": "Qwen2-1.5b", "input_price_1m": 5000.0, "output_price_1m": 15000.0},
+            {"model_id": "qwen3", "name": "Qwen3-1.7b", "input_price_1m": 7000.0, "output_price_1m": 21000.0}
+        ]})
+    try:
+        docs = db.collection("AI_model").stream()
+        models = []
+        for doc in docs:
+            d = doc.to_dict()
+            models.append({
+                "model_id": d.get("model_id"),
+                "name": d.get("name"),
+                "input_price_1m": d.get("input_price_1m"),
+                "output_price_1m": d.get("output_price_1m")
+            })
+        return jsonify({"models": models})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    print("Loading model, please wait...")
-    model, tokenizer = load_model(
-        base_model_name=BASE_MODEL_PATH,
-        lora_weights_path=LORA_WEIGHTS_PATH,
-    )
-    print("Model loaded. Starting Flask server...")
+@app.route('/api/admin/models', methods=['POST'])
+def admin_list_models():
+    uid = request.json.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    try:
+        docs = db.collection("AI_model").stream()
+        models = []
+        for doc in docs:
+            d = doc.to_dict()
+            d['id'] = doc.id
+            models.append(d)
+        return jsonify({"models": models})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/admin/models/add', methods=['POST'])
+def admin_add_model():
+    data = request.json
+    uid = data.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    
+    model_id = data.get('model_id', '').strip()
+    name = data.get('name', '').strip()
+    path = data.get('path', '').strip()
+    input_price = float(data.get('input_price_1m', 5000.0))
+    output_price = float(data.get('output_price_1m', 15000.0))
+    
+    if not model_id or not name or not path:
+        return jsonify({"error": "Missing required fields (model_id, name, path)"}), 400
+        
+    try:
+        db.collection("AI_model").document(model_id).set({
+            "model_id": model_id,
+            "name": name,
+            "path": path,
+            "input_price_1m": input_price,
+            "output_price_1m": output_price
+        })
+        return jsonify({"success": True, "model_id": model_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/admin/models/delete', methods=['POST'])
+def admin_delete_model():
+    data = request.json
+    uid = data.get('uid')
+    if not require_admin(uid):
+        return jsonify({"error": "Forbidden"}), 403
+    if db is None:
+        return jsonify({"error": "Firebase not connected"}), 500
+    
+    model_id = data.get('model_id')
+    if not model_id:
+        return jsonify({"error": "Missing model_id"}), 400
+        
+    try:
+        db.collection("AI_model").document(model_id).delete()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == '__main__':
+    print("Pre-loading Qwen2 model...")
+    try:
+        get_model_and_tokenizer('qwen2')
+    except Exception as e:
+        print(f"Warning: Failed to pre-load Qwen2 at startup: {e}")
+    print("Starting Flask server...")
     app.run(host='0.0.0.0', port=5000, debug=False)
 
