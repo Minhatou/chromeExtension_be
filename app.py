@@ -1237,14 +1237,26 @@ def translate():
             return jsonify({"error": str(e)}), 500
 
 
+# Lazy loader for EasyOCR to prevent memory overhead at startup
+easyocr_reader = None
+
+def get_easyocr_reader():
+    global easyocr_reader
+    if easyocr_reader is None:
+        import easyocr
+        print("[EasyOCR] Initializing EasyOCR Reader (vi, en)...")
+        # Automatically detects CUDA/GPU if available, otherwise runs on CPU
+        easyocr_reader = easyocr.Reader(['vi', 'en'])
+        print("[EasyOCR] EasyOCR Reader initialized successfully!")
+    return easyocr_reader
+
+
 @app.route('/api/ocr', methods=['POST'])
 def ocr_image():
-    """OCR an image sent as base64 and return extracted text."""
+    """OCR an image sent as base64 and return extracted text using EasyOCR."""
     import base64 as _b64, io
     from PIL import Image
-    import pytesseract
-
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    import numpy as np
 
     data = request.json
     if not data or 'image' not in data:
@@ -1257,20 +1269,64 @@ def ocr_image():
     try:
         img_bytes = _b64.b64decode(image_b64)
         img = Image.open(io.BytesIO(img_bytes))
+        img_np = np.array(img)
 
-        try:
-            text = pytesseract.image_to_string(img, lang='eng+vie')
-        except pytesseract.TesseractError:
-            text = pytesseract.image_to_string(img, lang='eng')
+        # Lazy load the EasyOCR reader
+        reader = get_easyocr_reader()
 
-        text = text.strip()
+        # Run OCR
+        results = reader.readtext(img_np, detail=0)
+        text = " ".join(results).strip()
+
         if not text:
             return jsonify({"error": "Không tìm thấy chữ trong ảnh"}), 422
 
-        print(f"[OCR] Extracted {len(text)} chars from image")
+        print(f"[EasyOCR] Extracted {len(text)} chars from image")
         return jsonify({"text": text})
     except Exception as e:
-        print(f"[OCR ERROR] {e}")
+        print(f"[EasyOCR ERROR] {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/document/extract', methods=['POST'])
+def extract_document():
+    """Extract text from uploaded PDF or DOCX file."""
+    import io
+    from pypdf import PdfReader
+    from docx import Document
+
+    if 'file' not in request.files:
+        return jsonify({"error": "Không tìm thấy tài liệu"}), 400
+
+    file = request.files['file']
+    filename = file.filename.lower()
+
+    try:
+        file_stream = io.BytesIO(file.read())
+        text = ""
+
+        if filename.endswith('.pdf'):
+            reader = PdfReader(file_stream)
+            text_list = []
+            for page in reader.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    text_list.append(extracted)
+            text = "\n".join(text_list)
+        elif filename.endswith('.docx'):
+            doc = Document(file_stream)
+            text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+        else:
+            return jsonify({"error": "Định dạng file không hỗ trợ. Chỉ nhận PDF và DOCX."}), 400
+
+        text = text.strip()
+        if not text:
+            return jsonify({"error": "Không thể trích xuất chữ hoặc tài liệu rỗng"}), 422
+
+        print(f"[DOC EXTRACT] Extracted {len(text)} chars from {file.filename}")
+        return jsonify({"text": text})
+    except Exception as e:
+        print(f"[DOC EXTRACT ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
 

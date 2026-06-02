@@ -5,3 +5,7 @@ bitsandbytes
 flask
 flask-cors
 accelerate
+easyocr
+Pillow
+pypdf
+python-docx
