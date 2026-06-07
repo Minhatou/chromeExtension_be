@@ -68,9 +68,9 @@ def load_model(base_model_name=r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278
         return "online_model", hf_token
 
 
-def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both"):
+def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both", model_id="qwen2"):
     """
-    Translate text using Qwen/Qwen2.5-1.5B-Instruct hosted on Hugging Face Serverless Inference API.
+    Translate text using Qwen models hosted on Hugging Face Serverless Inference API or locally.
     """
     import time
     
@@ -195,8 +195,13 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         else:
             print("  [API CALL WARNING] Calling API without HF_TOKEN Authorization headers!")
             
+        # Map model_id to appropriate Hugging Face repo
+        hf_model = "minhatou/qwen2"
+        if model_id == "qwen3":
+            hf_model = "minhatou/qwen3-1.7b-7278"
+            
         payload = {
-            "model": "minhatou/qwen2",
+            "model": hf_model,
             "messages": messages,
             "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
             "temperature": 0.1
@@ -204,7 +209,7 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         
         detected_src = detect_language(text)
         print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
-        print(f"  [ONLINE MODEL] Calling minhatou/qwen2 via router.huggingface.co chat completions...")
+        print(f"  [ONLINE MODEL] Calling {hf_model} via router.huggingface.co chat completions...")
         
         start_time = time.time()
         try:

@@ -1057,7 +1057,7 @@ def translate_batch():
         try:
             result = generate_translation(
                 model, tokenizer, combined, '',
-                target_lang, glossary, glossary_mode
+                target_lang, glossary, glossary_mode, model_id
             )
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -1183,7 +1183,7 @@ def translate():
     with inference_lock:
         try:
             _t0 = _time_module.perf_counter()
-            translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode)
+            translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode, model_id)
             _inference_elapsed = _time_module.perf_counter() - _t0
             _total_elapsed = _time_module.perf_counter() - _request_start
             _chars_per_sec = len(translation) / _inference_elapsed if _inference_elapsed > 0 else 0
