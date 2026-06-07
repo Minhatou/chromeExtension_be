@@ -9,3 +9,5 @@ easyocr
 Pillow
 pypdf
 python-docx
+requests
+firebase-admin
