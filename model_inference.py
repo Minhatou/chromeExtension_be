@@ -68,9 +68,9 @@ def load_model(base_model_name=r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278
         return "online_model", hf_token
 
 
-def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both", model_id="qwen2"):
+def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both", model_id="qwen3"):
     """
-    Translate text using Qwen models hosted on Hugging Face Serverless Inference API or locally.
+    Translate text using Qwen models hosted on Hugging Face Serverless Inference API, Dedicated Endpoints, or locally.
     """
     import time
     
@@ -195,15 +195,8 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         else:
             print("  [API CALL WARNING] Calling API without HF_TOKEN Authorization headers!")
             
-        # Map model_id to appropriate Hugging Face repo
-        hf_model = "minhatou/qwen2"
         if model_id == "qwen3":
-            hf_model = "minhatou/qwen3-1.7b-7278"
-            
-        is_custom_model = (model_id == "qwen3")
-        
-        if is_custom_model:
-            url = f"https://api-inference.huggingface.co/models/{hf_model}"
+            url = "https://b9qx3l6qod0ti1kg.eu-west-1.aws.endpoints.huggingface.cloud"
             payload = {
                 "inputs": prompt,
                 "parameters": {
@@ -212,16 +205,16 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
                     "return_full_text": False
                 }
             }
-            print(f"  [ONLINE MODEL] Calling custom model {hf_model} via direct api-inference...")
+            print(f"  [ONLINE MODEL] Calling dedicated qwen3 endpoint...")
         else:
             url = "https://router.huggingface.co/v1/chat/completions"
             payload = {
-                "model": hf_model,
+                "model": "minhatou/qwen2",
                 "messages": messages,
                 "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
                 "temperature": 0.1
             }
-            print(f"  [ONLINE MODEL] Calling {hf_model} via router.huggingface.co chat completions...")
+            print(f"  [ONLINE MODEL] Calling minhatou/qwen2 via router.huggingface.co chat completions...")
         
         detected_src = detect_language(text)
         print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
@@ -237,13 +230,17 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
                 raise Exception(f"Hugging Face API returned error status {response.status_code}: {response.text}")
             
             res_data = response.json()
-            if is_custom_model:
+            if model_id == "qwen3":
                 if isinstance(res_data, list) and len(res_data) > 0:
                     result = res_data[0].get("generated_text", "").strip()
                 elif isinstance(res_data, dict):
                     result = res_data.get("generated_text", "").strip()
                 else:
-                    raise Exception(f"Unexpected response format from HF: {res_data}")
+                    raise Exception(f"Unexpected response format from HF Endpoint: {res_data}")
+                
+                # Fallback clean: if return_full_text=False failed or wasn't supported
+                if result.startswith(prompt):
+                    result = result[len(prompt):].strip()
             else:
                 result = res_data["choices"][0]["message"]["content"].strip()
             print(f"  [ONLINE MODEL] Successful response. Output length: {len(result)} chars.")

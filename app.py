@@ -83,7 +83,7 @@ def get_model_and_tokenizer(model_id):
             "qwen2": r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278",
             "qwen3": r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen3-1.7b-7278"
         }
-        path = model_paths.get(model_id, model_paths["qwen2"])
+        path = model_paths.get(model_id, model_paths["qwen3"])
     
     if model_id not in loaded_models:
         print(f"[DYNAMIC LOAD] Loading model {model_id} from: {path}...")
@@ -1038,7 +1038,7 @@ def translate_batch():
     user_id     = data.get('user_id', 'anonymous')
     glossary    = data.get('glossary', {})
     glossary_mode = data.get('glossary_mode', 'both')
-    model_id    = data.get('model_id', 'qwen2')
+    model_id    = data.get('model_id', 'qwen3')
 
     if not user_id or user_id == 'anonymous':
         return jsonify({"error": "Yêu cầu đăng nhập"}), 401
@@ -1097,7 +1097,7 @@ def translate():
     glossary = data.get('glossary', {})
     glossary_mode = data.get('glossary_mode', 'both')  # 'both' | 'direct' | 'ai'
     user_id = data.get('user_id', 'anonymous')
-    model_id = data.get('model_id', 'qwen2') # 'qwen2' | 'qwen3'
+    model_id = data.get('model_id', 'qwen3') # 'qwen2' | 'qwen3'
     share_translation = data.get('share_translation', False)
 
     if not user_id or user_id == 'anonymous':
