@@ -200,16 +200,31 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         if model_id == "qwen3":
             hf_model = "minhatou/qwen3-1.7b-7278"
             
-        payload = {
-            "model": hf_model,
-            "messages": messages,
-            "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
-            "temperature": 0.1
-        }
+        is_custom_model = (model_id == "qwen3")
+        
+        if is_custom_model:
+            url = f"https://api-inference.huggingface.co/models/{hf_model}"
+            payload = {
+                "inputs": prompt,
+                "parameters": {
+                    "max_new_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
+                    "temperature": 0.1,
+                    "return_full_text": False
+                }
+            }
+            print(f"  [ONLINE MODEL] Calling custom model {hf_model} via direct api-inference...")
+        else:
+            url = "https://router.huggingface.co/v1/chat/completions"
+            payload = {
+                "model": hf_model,
+                "messages": messages,
+                "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
+                "temperature": 0.1
+            }
+            print(f"  [ONLINE MODEL] Calling {hf_model} via router.huggingface.co chat completions...")
         
         detected_src = detect_language(text)
         print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
-        print(f"  [ONLINE MODEL] Calling {hf_model} via router.huggingface.co chat completions...")
         
         start_time = time.time()
         try:
@@ -222,7 +237,15 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
                 raise Exception(f"Hugging Face API returned error status {response.status_code}: {response.text}")
             
             res_data = response.json()
-            result = res_data["choices"][0]["message"]["content"].strip()
+            if is_custom_model:
+                if isinstance(res_data, list) and len(res_data) > 0:
+                    result = res_data[0].get("generated_text", "").strip()
+                elif isinstance(res_data, dict):
+                    result = res_data.get("generated_text", "").strip()
+                else:
+                    raise Exception(f"Unexpected response format from HF: {res_data}")
+            else:
+                result = res_data["choices"][0]["message"]["content"].strip()
             print(f"  [ONLINE MODEL] Successful response. Output length: {len(result)} chars.")
         except Exception as e:
             import traceback
