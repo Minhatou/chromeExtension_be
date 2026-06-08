@@ -459,6 +459,7 @@ def login():
 
         uid = res_data.get("localId")
         id_token = res_data.get("idToken")
+        refresh_token = res_data.get("refreshToken")
         
         # Get custom claims (role) using Admin SDK
         user = fb_auth.get_user(uid)
@@ -474,6 +475,7 @@ def login():
             "email": email,
             "role": role,
             "idToken": id_token,
+            "refreshToken": refresh_token,
             "free_credit": credits["free_credit"],
             "purchased_credit": credits["purchased_credit"],
             "total_credit": credits["total_credit"],
@@ -529,6 +531,7 @@ def register():
 
         uid = res_data.get("localId")
         id_token = res_data.get("idToken")
+        refresh_token = res_data.get("refreshToken")
         
         credits = get_or_init_user_credits(uid)
         
@@ -537,6 +540,7 @@ def register():
             "email": email,
             "role": "user",
             "idToken": id_token,
+            "refreshToken": refresh_token,
             "free_credit": credits["free_credit"],
             "purchased_credit": credits["purchased_credit"],
             "total_credit": credits["total_credit"],
@@ -611,7 +615,8 @@ def google_auth_page():
         firebase.auth().signInWithPopup(provider)
             .then(async (result) => {{
                 const idToken = await result.user.getIdToken();
-                window.opener.postMessage({{ type: 'GOOGLE_AUTH_SUCCESS', idToken: idToken }}, '*');
+                const refreshToken = result.user.refreshToken;
+                window.opener.postMessage({{ type: 'GOOGLE_AUTH_SUCCESS', idToken: idToken, refreshToken: refreshToken }}, '*');
                 document.body.innerHTML = '<h3 style="color: #4cd137;">Đăng nhập thành công!</h3><p>Đang quay lại ứng dụng...</p>';
                 setTimeout(() => window.close(), 1000);
             }})
@@ -630,6 +635,7 @@ def google_login():
     """Verify Firebase ID token obtained from Google Sign-In on client side."""
     data = request.json
     id_token = data.get('idToken', '')
+    refresh_token = data.get('refreshToken', '')
     if not id_token:
         return jsonify({"error": "Missing idToken"}), 400
     try:
@@ -650,6 +656,7 @@ def google_login():
             "email": email,
             "role": role,
             "idToken": id_token,
+            "refreshToken": refresh_token,
             "free_credit": credits["free_credit"],
             "purchased_credit": credits["purchased_credit"],
             "total_credit": credits["total_credit"],
@@ -657,6 +664,49 @@ def google_login():
         })
     except Exception as e:
         print(f"[FIREBASE GOOGLE LOGIN ERROR] {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/auth/refresh', methods=['POST'])
+def refresh_token():
+    """Exchange a refresh token for a new ID token."""
+    data = request.json
+    r_token = data.get('refreshToken') if data else None
+    if not r_token:
+        return jsonify({"error": "Missing refreshToken"}), 400
+    try:
+        import os
+        api_key = os.environ.get('FIREBASE_API_KEY')
+        if not api_key:
+            try:
+                with open(".env", "r") as f:
+                    for line in f:
+                        if line.startswith("FIREBASE_API_KEY="):
+                            api_key = line.strip().split("=", 1)[1]
+            except Exception:
+                pass
+        if not api_key:
+            return jsonify({"error": "Server is missing FIREBASE_API_KEY configuration."}), 500
+
+        import urllib.request
+        import json
+        
+        url = f"https://securetoken.googleapis.com/v1/token?key={api_key}"
+        req = urllib.request.Request(url, method="POST", headers={"Content-Type": "application/x-www-form-urlencoded"})
+        body = f"grant_type=refresh_token&refresh_token={r_token}".encode("utf-8")
+        
+        try:
+            with urllib.request.urlopen(req, data=body) as response:
+                res_data = json.loads(response.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode('utf-8')
+            print(f"[FIREBASE REFRESH ERROR] HTTP {e.code}: {err_body}")
+            return jsonify({"error": "Failed to refresh token", "details": err_body}), 401
+            
+        return jsonify({
+            "idToken": res_data.get("id_token"),
+            "refreshToken": res_data.get("refresh_token")
+        })
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/auth/verify', methods=['POST'])
