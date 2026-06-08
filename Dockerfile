@@ -25,6 +25,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir gunicorn
 
+# Pre-download EasyOCR models (vi, en) during build so they are cached in the image
+RUN python -c "import easyocr; easyocr.Reader(['vi', 'en'])"
+
 # Copy the rest of the application code
 COPY . .
 
