@@ -68,51 +68,11 @@ def load_model(base_model_name=r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278
         return "online_model", hf_token
 
 
-def trim_context(text: str, context: str) -> str:
-    """Reduce the context to 1 sentence before and 1 sentence after the target text to avoid model distraction."""
-    if not context or not text:
-        return context
-    
-    text_clean = text.strip()
-    context_clean = context.strip()
-    
-    if text_clean not in context_clean:
-        # Fallback to simple truncation
-        if len(context_clean) > 300:
-            return context_clean[:300] + "..."
-        return context_clean
-        
-    parts = context_clean.split(text_clean, 1)
-    before, after = parts[0], parts[1]
-    
-    import re
-    # Split sentences by punctuation followed by spaces
-    before_sentences = re.split(r'(?<=[.!?])\s+', before)
-    before_sentences = [s.strip() for s in before_sentences if s.strip()]
-    last_before = before_sentences[-1] if before_sentences else ""
-    
-    after_sentences = re.split(r'(?<=[.!?])\s+', after)
-    after_sentences = [s.strip() for s in after_sentences if s.strip()]
-    first_after = after_sentences[0] if after_sentences else ""
-    
-    trimmed = []
-    if last_before:
-        trimmed.append(last_before)
-    trimmed.append(text_clean)
-    if first_after:
-        trimmed.append(first_after)
-        
-    return " ".join(trimmed)
-
-
 def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both", model_id="qwen3"):
     """
     Translate text using Qwen models hosted on Hugging Face Serverless Inference API, Dedicated Endpoints, or locally.
     """
     import time
-    
-    # Trim the context to reduce model confusion
-    context = trim_context(text, context)
     
     # model here acts as a dummy/config, tokenizer contains our hf_token
     hf_token = tokenizer
@@ -144,42 +104,40 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
 
     if target_lang == "vietnamese":
         lang_instruction = (
-            "Translate ONLY the text inside the [TEXT_TO_TRANSLATE_ONLY] block from English into Vietnamese. "
-            "DO NOT translate any text inside the [CONTEXT_REFERENCE_ONLY] block. "
+            "Translate the given text from English into Vietnamese. "
             "Use accurate IT-specific Vietnamese terminology when the context is technical."
         )
         system_prompt = (
             "Bạn là một biên dịch viên chuyên nghiệp về công nghệ thông tin. "
-            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE_ONLY] sang tiếng Việt. "
-            "Khối [CONTEXT_REFERENCE_ONLY] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT_REFERENCE_ONLY]. "
-            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE_ONLY] và [CONTEXT_REFERENCE_ONLY]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE_ONLY]. "
-            "Mọi câu khác xuất hiện trong [CONTEXT_REFERENCE_ONLY] nhưng không có trong [TEXT_TO_TRANSLATE_ONLY] thì TUYỆT ĐỐI KHÔNG DỊCH."
+            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Việt. "
+            "Khối [CONTEXT] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT]. "
+            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE] và [CONTEXT]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE]. "
+            "Mọi câu khác xuất hiện trong [CONTEXT] nhưng không có trong [TEXT_TO_TRANSLATE] thì TUYỆT ĐỐI KHÔNG DỊCH."
         )
         if glossary_context:
             system_prompt += (
                 "\nKhi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
                 f"{glossary_context}\n"
             )
-        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE_ONLY], không dịch khối [CONTEXT_REFERENCE_ONLY], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
+        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], không dịch khối [CONTEXT], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
     elif target_lang == "english":
         lang_instruction = (
-            "Translate ONLY the text inside the [TEXT_TO_TRANSLATE_ONLY] block from Vietnamese into English. "
-            "DO NOT translate any text inside the [CONTEXT_REFERENCE_ONLY] block. "
+            "Translate the given text from Vietnamese into English. "
             "Use accurate IT-specific English terminology when the context is technical."
         )
         system_prompt = (
             "Bạn là một biên dịch viên chuyên nghiệp về công nghệ thông tin. "
-            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE_ONLY] sang tiếng Anh. "
-            "Khối [CONTEXT_REFERENCE_ONLY] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT_REFERENCE_ONLY]. "
-            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE_ONLY] và [CONTEXT_REFERENCE_ONLY]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE_ONLY]. "
-            "Mọi câu khác xuất hiện trong [CONTEXT_REFERENCE_ONLY] nhưng không có trong [TEXT_TO_TRANSLATE_ONLY] thì TUYỆT ĐỐI KHÔNG DỊCH."
+            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Anh. "
+            "Khối [CONTEXT] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT]. "
+            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE] và [CONTEXT]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE]. "
+            "Mọi câu khác xuất hiện trong [CONTEXT] nhưng không có trong [TEXT_TO_TRANSLATE] thì TUYỆT ĐỐI KHÔNG DỊCH."
         )
         if glossary_context:
             system_prompt += (
                 "\nKhi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
                 f"{glossary_context}\n"
             )
-        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE_ONLY], không dịch khối [CONTEXT_REFERENCE_ONLY], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
+        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], không dịch khối [CONTEXT], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
     elif target_lang == "explain":
         lang_instruction = (
             "Giải thích thuật ngữ công nghệ thông tin trong khối [TERM] bằng tiếng Việt. "
@@ -222,8 +180,8 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         )
     else:
         user_content = (
-            f"[CONTEXT_REFERENCE_ONLY]\n{context}\n[/CONTEXT_REFERENCE_ONLY]\n\n"
-            f"[TEXT_TO_TRANSLATE_ONLY]\n{text}\n[/TEXT_TO_TRANSLATE_ONLY]\n\n"
+            f"[CONTEXT]\n{context}\n[/CONTEXT]\n\n"
+            f"[TEXT_TO_TRANSLATE]\n{text}\n[/TEXT_TO_TRANSLATE]\n\n"
             f"Instruction: {lang_instruction}\n"
             f"Result:"
         )
@@ -373,11 +331,8 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
     # Return only the first non-empty line as a final safety fallback for translation
     if target_lang not in ("explain", "summarize"):
         lines = [l.strip() for l in result.split("\n") if l.strip()]
-        # Remove any structural tag lines copied/mimicked by the model (e.g. [CONTEXT], <text_to_translate>, etc.)
-        filtered_lines = [
-            l for l in lines 
-            if not (l.startswith("[") and l.endswith("]")) and not (l.startswith("<") and l.endswith(">"))
-        ]
+        # Remove any structural tag lines copied/mimicked by the model (e.g. [CONTEXT], [/CONTEXT], [TEXT_TO_TRANSLATE])
+        filtered_lines = [l for l in lines if not (l.startswith("[") and l.endswith("]"))]
         return filtered_lines[0] if filtered_lines else result
         
     return result
