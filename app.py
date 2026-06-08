@@ -57,6 +57,19 @@ except Exception as e:
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
+from payos import PayOS, ItemData, PaymentData
+payos_client = None
+try:
+    payos_client = PayOS(
+        client_id=os.environ.get("PAYOS_CLIENT_ID"),
+        api_key=os.environ.get("PAYOS_API_KEY"),
+        checksum_key=os.environ.get("PAYOS_CHECKSUM_KEY")
+    )
+    print("[PAYOS] Initialized successfully!")
+except Exception as e:
+    print(f"[PAYOS ERROR] Failed to initialize PayOS: {e}")
+
+
 @app.before_request
 def handle_preflight():
     if request.method == 'OPTIONS':
@@ -1778,6 +1791,143 @@ def admin_delete_model():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/payment/create', methods=['POST'])
+def create_payment():
+    if db is None or payos_client is None:
+        return jsonify({"error": "Payment service not configured or Firebase offline"}), 500
+    
+    data = request.json
+    uid = data.get('uid')
+    amount = data.get('amount')
+    package_id = data.get('package_id')
+    
+    if not uid or not amount:
+        return jsonify({"error": "Missing uid or amount"}), 400
+        
+    try:
+        amount = int(amount)
+    except ValueError:
+        return jsonify({"error": "Invalid amount"}), 400
+
+    import time
+    # Order code must be a number and max 9007199254740991 (Javascript maximum safe integer)
+    order_code = int(time.time() * 1000) % 9007199254740991
+
+    # Default redirect URLs pointing to the dashboard
+    return_url = data.get('return_url', "https://hvmndoan-production.up.railway.app/src/dashboard/index.html")
+    cancel_url = data.get('cancel_url', "https://hvmndoan-production.up.railway.app/src/dashboard/index.html")
+    
+    # Store order info in Firestore
+    db.collection("orders").document(str(order_code)).set({
+        "uid": uid,
+        "amount": amount,
+        "package_id": package_id,
+        "status": "pending",
+        "timestamp": firestore.SERVER_TIMESTAMP
+    })
+    
+    # Description limit is 25 characters
+    desc = f"Nap {package_id} {uid[:8]}".strip()
+    if len(desc) > 25:
+        desc = desc[:25]
+        
+    payment_data = PaymentData(
+        orderCode=order_code,
+        amount=amount,
+        description=desc,
+        items=[ItemData(name=f"Gói {package_id}", quantity=1, price=amount)],
+        returnUrl=return_url,
+        cancelUrl=cancel_url
+    )
+    
+    try:
+        res = payos_client.createPaymentLink(payment_data)
+        return jsonify({
+            "success": True,
+            "checkoutUrl": res.checkoutUrl,
+            "orderCode": order_code
+        })
+    except Exception as e:
+        print(f"[PayOS Error] {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/payment/webhook', methods=['POST'])
+def payos_webhook():
+    if db is None or payos_client is None:
+        return jsonify({"error": "Payment service not configured or Firebase offline"}), 500
+        
+    webhook_data = request.json
+    try:
+        # Verify the webhook signature
+        verified_data = payos_client.verifyPaymentWebhookData(webhook_data)
+        order_code = str(verified_data['orderCode'])
+        amount = verified_data['amount']
+        
+        # Get order details from Firestore
+        order_ref = db.collection("orders").document(order_code)
+        order_snap = order_ref.get()
+        if not order_snap.exists:
+            return jsonify({"error": "Order not found"}), 404
+            
+        order_info = order_snap.to_dict()
+        if order_info.get('status') == 'completed':
+            return jsonify({"success": True, "message": "Already processed"}), 200
+            
+        uid = order_info['uid']
+        package_id = order_info['package_id']
+        
+        # 1 VNĐ = 1 Credit
+        credits_to_add = amount
+        
+        user_ref = db.collection("users").document(uid)
+        
+        # Use a transaction to safely update credits
+        @firestore.transactional
+        def update_credits_tx(transaction, user_ref, credits_to_add, amount, package_id):
+            user_snap = user_ref.get(transaction=transaction)
+            if not user_snap.exists:
+                # Create user document if it doesn't exist
+                transaction.set(user_ref, {
+                    "free_credit": 100000.0,
+                    "purchased_credit": float(credits_to_add),
+                    "total_credit": 100000.0 + float(credits_to_add),
+                    "role": "user",
+                    "email": ""
+                })
+            else:
+                user_data = user_snap.to_dict()
+                current_purchased = user_data.get("purchased_credit", 0.0)
+                current_free = user_data.get("free_credit", 100000.0)
+                
+                transaction.update(user_ref, {
+                    "purchased_credit": current_purchased + float(credits_to_add),
+                    "total_credit": current_free + current_purchased + float(credits_to_add)
+                })
+                
+            # Log transaction
+            tx_ref = db.collection("transactions").document()
+            transaction.set(tx_ref, {
+                "uid": uid,
+                "amount": amount,
+                "package_id": package_id,
+                "payment_method": "payos",
+                "timestamp": firestore.SERVER_TIMESTAMP
+            })
+            
+        transaction = db.transaction()
+        update_credits_tx(transaction, user_ref, credits_to_add, amount, package_id)
+        
+        # Update order status to completed
+        order_ref.update({
+            "status": "completed",
+            "completed_at": firestore.SERVER_TIMESTAMP
+        })
+        
+        return jsonify({"success": True, "message": "Payment verified and credited"}), 200
+    except Exception as e:
+        print(f"[Webhook Error] {e}")
+        return jsonify({"error": str(e)}), 400
 
 
 if __name__ == '__main__':
