@@ -1331,6 +1331,19 @@ def get_easyocr_reader():
     return easyocr_reader
 
 
+def preload_easyocr_in_background():
+    try:
+        import time
+        time.sleep(5)
+        print("[EasyOCR] Background preloader starting...")
+        get_easyocr_reader()
+    except Exception as e:
+        print(f"[EasyOCR Preload Error] Failed background preload: {e}")
+
+# Start preloading EasyOCR vi/en models in a background thread at startup
+threading.Thread(target=preload_easyocr_in_background, daemon=True).start()
+
+
 @app.route('/api/ocr', methods=['POST'])
 def ocr_image():
     """OCR an image sent as base64 and return extracted text using EasyOCR."""

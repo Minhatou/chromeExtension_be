@@ -26,7 +26,8 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir gunicorn
 
 # Pre-download EasyOCR models (vi, en) during build so they are cached in the image
-RUN python -c "import easyocr; easyocr.Reader(['vi', 'en'])"
+# Fallback to true if network/time-out fails to prevent build crash
+RUN python -c "import easyocr; easyocr.Reader(['vi', 'en'])" || true
 
 # Copy the rest of the application code
 COPY . .
