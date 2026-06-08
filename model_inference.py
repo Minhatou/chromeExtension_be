@@ -9,7 +9,7 @@ VI_CHARS = set(
 
 # Filler phrases small models tend to append after the translation
 FILLER_MARKERS = [
-    "Note:", "note:", "**", "Here is", "here is",
+    "Note:", "note:", "Here is", "here is",
     "Original Text:", "original text:", "The translation",
     "Please let me know", "I have translated", "Let me know",
     "Additional", "Explanation:", "Context:", "I hope",
