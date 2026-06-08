@@ -57,7 +57,8 @@ except Exception as e:
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-from payos import PayOS, ItemData, PaymentData
+from payos import PayOS
+from payos.types import CreatePaymentLinkRequest, ItemData
 payos_client = None
 try:
     payos_client = PayOS(
@@ -1824,7 +1825,7 @@ def create_payment():
         return jsonify({"error": "Invalid amount"}), 400
 
     import time
-    # Order code must be a number and max 9007199254740991 (Javascript maximum safe integer)
+    # Order code must be a number and max 9007199254740991
     order_code = int(time.time() * 1000) % 9007199254740991
 
     # Default redirect URLs pointing to the dashboard
@@ -1845,20 +1846,27 @@ def create_payment():
     if len(desc) > 25:
         desc = desc[:25]
         
-    payment_data = PaymentData(
-        orderCode=order_code,
-        amount=amount,
-        description=desc,
-        items=[ItemData(name=f"Gói {package_id}", quantity=1, price=amount)],
-        returnUrl=return_url,
-        cancelUrl=cancel_url
-    )
-    
     try:
-        res = payos_client.createPaymentLink(payment_data)
+        # Create payment data using official PayOS Types
+        item = ItemData(name=f"Gói {package_id}", quantity=1, price=amount)
+        payment_data = CreatePaymentLinkRequest(
+            order_code=order_code,
+            amount=amount,
+            description=desc,
+            items=[item],
+            return_url=return_url,
+            cancel_url=cancel_url
+        )
+        
+        # Try both direct method and payment_requests namespace
+        try:
+            res = payos_client.create_payment_link(payment_data)
+        except AttributeError:
+            res = payos_client.payment_requests.create(payment_data)
+            
         return jsonify({
             "success": True,
-            "checkoutUrl": res.checkoutUrl,
+            "checkoutUrl": getattr(res, "checkout_url", getattr(res, "checkoutUrl", None)),
             "orderCode": order_code
         })
     except Exception as e:
@@ -1872,11 +1880,17 @@ def payos_webhook():
         
     webhook_data = request.json
     try:
-        # Verify the webhook signature
-        verified_data = payos_client.verifyPaymentWebhookData(webhook_data)
-        order_code = str(verified_data['orderCode'])
-        amount = verified_data['amount']
-        
+        # Robust verification supporting both verify_payment_webhook_data and webhooks.verify
+        try:
+            verified_data = payos_client.verify_payment_webhook_data(webhook_data)
+            order_code = str(verified_data.get('orderCode') or verified_data.get('order_code'))
+            amount = verified_data.get('amount')
+        except Exception:
+            raw_data = request.get_data()
+            verified_data = payos_client.webhooks.verify(raw_data)
+            order_code = str(verified_data.order_code)
+            amount = verified_data.amount
+            
         # Get order details from Firestore
         order_ref = db.collection("orders").document(order_code)
         order_snap = order_ref.get()
@@ -1900,7 +1914,6 @@ def payos_webhook():
         def update_credits_tx(transaction, user_ref, credits_to_add, amount, package_id):
             user_snap = user_ref.get(transaction=transaction)
             if not user_snap.exists:
-                # Create user document if it doesn't exist
                 transaction.set(user_ref, {
                     "free_credit": 100000.0,
                     "purchased_credit": float(credits_to_add),
