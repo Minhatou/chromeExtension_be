@@ -36,6 +36,7 @@ def init_ai_models():
 
 try:
     import json
+    import os
     service_account_env = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
     if service_account_env:
         service_account_info = json.loads(service_account_env)
