@@ -109,16 +109,17 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         )
         system_prompt = (
             "Bạn là một biên dịch viên chuyên nghiệp về công nghệ thông tin. "
-            "Nhiệm vụ của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Việt. "
-            "Khối [CONTEXT] được cung cấp CHỈ để giúp bạn hiểu rõ ngữ cảnh của từ ngữ hoặc các đại từ xưng hô, "
-            "tuyệt đối KHÔNG được dịch các câu trong khối [CONTEXT] hay đưa bất kỳ nội dung nào từ [CONTEXT] vào kết quả đầu ra của bạn. "
+            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Việt. "
+            "Khối [CONTEXT] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT]. "
+            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE] và [CONTEXT]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE]. "
+            "Mọi câu khác xuất hiện trong [CONTEXT] nhưng không có trong [TEXT_TO_TRANSLATE] thì TUYỆT ĐỐI KHÔNG DỊCH."
         )
         if glossary_context:
             system_prompt += (
-                "Khi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
+                "\nKhi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
                 f"{glossary_context}\n"
             )
-        system_prompt += "Hãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], KHÔNG giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
+        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], không dịch khối [CONTEXT], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
     elif target_lang == "english":
         lang_instruction = (
             "Translate the given text from Vietnamese into English. "
@@ -126,16 +127,17 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         )
         system_prompt = (
             "Bạn là một biên dịch viên chuyên nghiệp về công nghệ thông tin. "
-            "Nhiệm vụ của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Anh. "
-            "Khối [CONTEXT] được cung cấp CHỈ để giúp bạn hiểu rõ ngữ cảnh của từ ngữ hoặc các đại từ xưng hô, "
-            "tuyệt đối KHÔNG được dịch các câu trong khối [CONTEXT] hay đưa bất kỳ nội dung nào từ [CONTEXT] vào kết quả đầu ra của bạn. "
+            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Anh. "
+            "Khối [CONTEXT] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT]. "
+            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE] và [CONTEXT]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE]. "
+            "Mọi câu khác xuất hiện trong [CONTEXT] nhưng không có trong [TEXT_TO_TRANSLATE] thì TUYỆT ĐỐI KHÔNG DỊCH."
         )
         if glossary_context:
             system_prompt += (
-                "Khi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
+                "\nKhi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
                 f"{glossary_context}\n"
             )
-        system_prompt += "Hãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], KHÔNG giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
+        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], không dịch khối [CONTEXT], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
     elif target_lang == "explain":
         lang_instruction = (
             "Giải thích thuật ngữ công nghệ thông tin trong khối [TERM] bằng tiếng Việt. "
