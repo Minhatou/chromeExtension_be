@@ -277,8 +277,13 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             traceback.print_exc()
             raise e
 
-    print(f"  [ONLINE MODEL] API output successfully parsed. Raw length: {len(result)} chars.")
-
+    # Clean up reasoning <think> tags or thoughts
+    if "<think>" in result and "</think>" in result:
+        import re
+        result = re.sub(r'<think>[\s\S]*?</think>', '', result)
+    else:
+        result = result.replace("<think>", "").replace("</think>", "")
+    result = result.strip()
 
     if target_lang == "explain" and not result.startswith("1. Định nghĩa:"):
         return "1. Định nghĩa: " + result
