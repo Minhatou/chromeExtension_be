@@ -104,7 +104,8 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             "Nhiệm vụ của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Việt. "
             "Khối [CONTEXT] được cung cấp CHỈ để giúp bạn hiểu rõ ngữ cảnh của từ ngữ hoặc các đại từ xưng hô, "
             "tuyệt đối KHÔNG được dịch các câu trong khối [CONTEXT] hay đưa bất kỳ nội dung nào từ [CONTEXT] vào kết quả đầu ra của bạn. "
-            "Hãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], KHÔNG giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
+            "Nếu có khối [GLOSSARY], hãy bắt buộc sử dụng các từ dịch được định nghĩa trong đó để dịch các từ tương ứng trong khối [TEXT_TO_TRANSLATE]. "
+            "Hãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], KHÔNG giải thích, không dịch khối [GLOSSARY] hay khối [CONTEXT], không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
         )
     elif target_lang == "english":
         lang_instruction = (
@@ -116,7 +117,8 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             "Nhiệm vụ của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Anh. "
             "Khối [CONTEXT] được cung cấp CHỈ để giúp bạn hiểu rõ ngữ cảnh của từ ngữ hoặc các đại từ xưng hô, "
             "tuyệt đối KHÔNG được dịch các câu trong khối [CONTEXT] hay đưa bất kỳ nội dung nào từ [CONTEXT] vào kết quả đầu ra của bạn. "
-            "Hãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], KHÔNG giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
+            "Nếu có khối [GLOSSARY], hãy bắt buộc sử dụng các từ dịch được định nghĩa trong đó để dịch các từ tương ứng trong khối [TEXT_TO_TRANSLATE]. "
+            "Hãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], KHÔNG giải thích, không dịch khối [GLOSSARY] hay khối [CONTEXT], không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
         )
     elif target_lang == "explain":
         lang_instruction = (
@@ -150,7 +152,6 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         if glossary_items:
             glossary_context = "Glossary (Bắt buộc dùng các từ dịch này nếu xuất hiện trong văn bản):\n" + "\n".join(glossary_items)
             print(f"  [GLOSSARY] Enforced glossary prompt context:\n{glossary_context}")
-            system_prompt += f"\n\n{glossary_context}"
     
     # Construct the messages for the chat template with strict tag wrapping
     if target_lang == "explain":
@@ -168,7 +169,10 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             f"- "
         )
     else:
-        user_content = (
+        user_content = ""
+        if glossary_context:
+            user_content += f"[GLOSSARY]\n{glossary_context}\n[/GLOSSARY]\n\n"
+        user_content += (
             f"[CONTEXT]\n{context}\n[/CONTEXT]\n\n"
             f"[TEXT_TO_TRANSLATE]\n{text}\n[/TEXT_TO_TRANSLATE]\n\n"
             f"Instruction: {lang_instruction}\n"
