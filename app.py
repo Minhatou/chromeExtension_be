@@ -1914,8 +1914,8 @@ def payos_webhook():
         order_snap = order_ref.get()
         print(f"[Webhook Debug] Firestore check for order {order_code}: exists={order_snap.exists}")
         if not order_snap.exists:
-            print(f"[Webhook Error] Order {order_code} not found in collection 'orders'!")
-            return jsonify({"error": f"Order {order_code} not found"}), 404
+            print(f"[Webhook Info] Order {order_code} not found in collection 'orders'. This might be a test/dummy webhook from PayOS registration. Returning 200.")
+            return jsonify({"success": True, "message": "Order not found but signature verified (possibly test/dummy webhook)"}), 200
             
         order_info = order_snap.to_dict()
         print(f"[Webhook Debug] Order info from DB: {order_info}")
