@@ -115,7 +115,7 @@ def get_model_and_tokenizer(model_id):
         loaded_tokenizers[model_id] = t
         print(f"[DYNAMIC LOAD] Model {model_id} loaded successfully!")
         
-    return loaded_models[model_id], loaded_tokenizers[model_id]
+    return loaded_models[model_id], loaded_tokenizers[model_id], path
 
 
 # ── Firebase Helper Functions ─────────────────────────────────────────────────
@@ -1103,7 +1103,9 @@ def status():
                     models_status.append({
                         "model_id": mid,
                         "name": name,
-                        "loaded": mid in loaded_models
+                        "loaded": mid in loaded_models,
+                        "input_price_1m": float(m_data.get("input_price_1m", 0.0)),
+                        "output_price_1m": float(m_data.get("output_price_1m", 0.0))
                     })
         except Exception as e:
             print(f"[Status Error] Failed to fetch models status: {e}")
@@ -1143,7 +1145,7 @@ def translate_batch():
         return jsonify({"error": "Yêu cầu đăng nhập"}), 401
 
     try:
-        model, tokenizer = get_model_and_tokenizer(model_id)
+        model, tokenizer, path = get_model_and_tokenizer(model_id)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1156,7 +1158,7 @@ def translate_batch():
         try:
             result = generate_translation(
                 model, tokenizer, combined, '',
-                target_lang, glossary, glossary_mode, model_id
+                target_lang, glossary, glossary_mode, model_id, model_path=path
             )
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -1206,7 +1208,7 @@ def translate():
 
     # 1. Dynamic Model Load
     try:
-        model, tokenizer = get_model_and_tokenizer(model_id)
+        model, tokenizer, path = get_model_and_tokenizer(model_id)
     except Exception as load_err:
         return jsonify({"error": f"Failed to load model {model_id}: {str(load_err)}"}), 500
 
@@ -1282,7 +1284,7 @@ def translate():
     with inference_lock:
         try:
             _t0 = _time_module.perf_counter()
-            translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode, model_id)
+            translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode, model_id, model_path=path)
             _inference_elapsed = _time_module.perf_counter() - _t0
             _total_elapsed = _time_module.perf_counter() - _request_start
             _chars_per_sec = len(translation) / _inference_elapsed if _inference_elapsed > 0 else 0

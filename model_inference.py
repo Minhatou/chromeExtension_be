@@ -68,7 +68,7 @@ def load_model(base_model_name=r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278
         return "online_model", hf_token
 
 
-def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both", model_id="qwen3"):
+def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both", model_id="qwen3", model_path=None):
     """
     Translate text using Qwen models hosted on Hugging Face Serverless Inference API, Dedicated Endpoints, or locally.
     """
@@ -206,8 +206,23 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         else:
             print("  [API CALL WARNING] Calling API without HF_TOKEN Authorization headers!")
             
-        if model_id == "qwen3":
-            url = "https://b9qx3l6qod0ti1kg.eu-west-1.aws.endpoints.huggingface.cloud"
+        is_dedicated_endpoint = False
+        if model_path:
+            if model_path.startswith("http://") or model_path.startswith("https://"):
+                url = model_path
+                is_dedicated_endpoint = True
+            else:
+                url = "https://router.huggingface.co/v1/chat/completions"
+                is_dedicated_endpoint = False
+        else:
+            if model_id == "qwen3":
+                url = "https://b9qx3l6qod0ti1kg.eu-west-1.aws.endpoints.huggingface.cloud"
+                is_dedicated_endpoint = True
+            else:
+                url = "https://router.huggingface.co/v1/chat/completions"
+                is_dedicated_endpoint = False
+
+        if is_dedicated_endpoint:
             payload = {
                 "inputs": prompt,
                 "parameters": {
@@ -216,16 +231,16 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
                     "return_full_text": False
                 }
             }
-            print(f"  [ONLINE MODEL] Calling dedicated qwen3 endpoint...")
+            print(f"  [ONLINE MODEL] Calling dedicated HF endpoint: {url}")
         else:
-            url = "https://router.huggingface.co/v1/chat/completions"
+            resolved_repo_id = model_path if model_path else ("minhatou/qwen2" if model_id != "qwen3" else "minhatou/qwen3")
             payload = {
-                "model": "minhatou/qwen2",
+                "model": resolved_repo_id,
                 "messages": messages,
                 "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
                 "temperature": 0.1
             }
-            print(f"  [ONLINE MODEL] Calling minhatou/qwen2 via router.huggingface.co chat completions...")
+            print(f"  [ONLINE MODEL] Calling {resolved_repo_id} via router.huggingface.co chat completions...")
         
         detected_src = detect_language(text)
         print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
@@ -248,7 +263,7 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
                 raise Exception(f"Hugging Face API returned error status {response.status_code}: {response.text}")
             
             res_data = response.json()
-            if model_id == "qwen3":
+            if is_dedicated_endpoint:
                 if isinstance(res_data, list) and len(res_data) > 0:
                     result = res_data[0].get("generated_text", "").strip()
                 elif isinstance(res_data, dict):
