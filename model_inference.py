@@ -242,8 +242,12 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
                 else:
                     raise Exception(f"Unexpected response format from HF Endpoint: {res_data}")
                 
-                # Fallback clean: if return_full_text=False failed or wasn't supported
-                if result.startswith(prompt):
+                # Robustly strip prompt using the assistant turn token
+                if "<|im_start|>assistant" in result:
+                    result = result.split("<|im_start|>assistant")[-1].strip()
+                    if result.startswith(":"):
+                        result = result[1:].strip()
+                elif result.startswith(prompt):
                     result = result[len(prompt):].strip()
             else:
                 result = res_data["choices"][0]["message"]["content"].strip()
