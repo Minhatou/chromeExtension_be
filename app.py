@@ -750,10 +750,18 @@ def recharge_tokens():
         "premium": 500000.0
     }
 
-    if package_id not in packages:
-        return jsonify({"error": "Invalid package_id"}), 400
-
-    added_credit = packages[package_id]
+    if package_id == "custom":
+        amount = data.get("amount")
+        try:
+            added_credit = float(amount)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Số tiền nạp không hợp lệ"}), 400
+        if added_credit < 1000.0:
+            return jsonify({"error": "Số tiền nạp tối thiểu là 1,000 VNĐ"}), 400
+    elif package_id in packages:
+        added_credit = packages[package_id]
+    else:
+        return jsonify({"error": "Gói nạp không hợp lệ"}), 400
     
     try:
         user_ref = db.collection("user_info").document(uid)
