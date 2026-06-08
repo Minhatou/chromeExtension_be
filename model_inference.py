@@ -68,11 +68,51 @@ def load_model(base_model_name=r"C:\Users\Cko Ckeems Ngoo\LlamaFactory\qwen_7278
         return "online_model", hf_token
 
 
+def trim_context(text: str, context: str) -> str:
+    """Reduce the context to 1 sentence before and 1 sentence after the target text to avoid model distraction."""
+    if not context or not text:
+        return context
+    
+    text_clean = text.strip()
+    context_clean = context.strip()
+    
+    if text_clean not in context_clean:
+        # Fallback to simple truncation
+        if len(context_clean) > 300:
+            return context_clean[:300] + "..."
+        return context_clean
+        
+    parts = context_clean.split(text_clean, 1)
+    before, after = parts[0], parts[1]
+    
+    import re
+    # Split sentences by punctuation followed by spaces
+    before_sentences = re.split(r'(?<=[.!?])\s+', before)
+    before_sentences = [s.strip() for s in before_sentences if s.strip()]
+    last_before = before_sentences[-1] if before_sentences else ""
+    
+    after_sentences = re.split(r'(?<=[.!?])\s+', after)
+    after_sentences = [s.strip() for s in after_sentences if s.strip()]
+    first_after = after_sentences[0] if after_sentences else ""
+    
+    trimmed = []
+    if last_before:
+        trimmed.append(last_before)
+    trimmed.append(text_clean)
+    if first_after:
+        trimmed.append(first_after)
+        
+    return " ".join(trimmed)
+
+
 def generate_translation(model, tokenizer, text, context="", target_lang="auto", glossary=None, glossary_mode="both", model_id="qwen3"):
     """
     Translate text using Qwen models hosted on Hugging Face Serverless Inference API, Dedicated Endpoints, or locally.
     """
     import time
+    
+    # Trim the context to reduce model confusion
+    context = trim_context(text, context)
     
     # model here acts as a dummy/config, tokenizer contains our hf_token
     hf_token = tokenizer
@@ -104,50 +144,50 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
 
     if target_lang == "vietnamese":
         lang_instruction = (
-            "Translate ONLY the text inside the <text_to_translate> tag from English into Vietnamese. "
-            "DO NOT translate any text inside the <context_reference> tag. "
+            "Translate ONLY the text inside the [TEXT_TO_TRANSLATE_ONLY] block from English into Vietnamese. "
+            "DO NOT translate any text inside the [CONTEXT_REFERENCE_ONLY] block. "
             "Use accurate IT-specific Vietnamese terminology when the context is technical."
         )
         system_prompt = (
             "Bạn là một biên dịch viên chuyên nghiệp về công nghệ thông tin. "
-            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong thẻ <text_to_translate> sang tiếng Việt. "
-            "Thẻ <context_reference> chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong thẻ <context_reference>. "
-            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai thẻ <text_to_translate> và <context_reference>. Bạn chỉ được dịch câu chữ xuất hiện trong <text_to_translate>. "
-            "Mọi câu khác xuất hiện trong <context_reference> nhưng không có trong <text_to_translate> thì TUYỆT ĐỐI KHÔNG DỊCH."
+            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE_ONLY] sang tiếng Việt. "
+            "Khối [CONTEXT_REFERENCE_ONLY] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT_REFERENCE_ONLY]. "
+            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE_ONLY] và [CONTEXT_REFERENCE_ONLY]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE_ONLY]. "
+            "Mọi câu khác xuất hiện trong [CONTEXT_REFERENCE_ONLY] nhưng không có trong [TEXT_TO_TRANSLATE_ONLY] thì TUYỆT ĐỐI KHÔNG DỊCH."
         )
         if glossary_context:
             system_prompt += (
                 "\nKhi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
                 f"{glossary_context}\n"
             )
-        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong thẻ <text_to_translate>, không dịch thẻ <context_reference>, không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
+        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE_ONLY], không dịch khối [CONTEXT_REFERENCE_ONLY], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
     elif target_lang == "english":
         lang_instruction = (
-            "Translate ONLY the text inside the <text_to_translate> tag from Vietnamese into English. "
-            "DO NOT translate any text inside the <context_reference> tag. "
+            "Translate ONLY the text inside the [TEXT_TO_TRANSLATE_ONLY] block from Vietnamese into English. "
+            "DO NOT translate any text inside the [CONTEXT_REFERENCE_ONLY] block. "
             "Use accurate IT-specific English terminology when the context is technical."
         )
         system_prompt = (
             "Bạn là một biên dịch viên chuyên nghiệp về công nghệ thông tin. "
-            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong thẻ <text_to_translate> sang tiếng Anh. "
-            "Thẻ <context_reference> chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong thẻ <context_reference>. "
-            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai thẻ <text_to_translate> và <context_reference>. Bạn chỉ được dịch câu chữ xuất hiện trong <text_to_translate>. "
-            "Mọi câu khác xuất hiện trong <context_reference> nhưng không có trong <text_to_translate> thì TUYỆT ĐỐI KHÔNG DỊCH."
+            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE_ONLY] sang tiếng Anh. "
+            "Khối [CONTEXT_REFERENCE_ONLY] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT_REFERENCE_ONLY]. "
+            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE_ONLY] và [CONTEXT_REFERENCE_ONLY]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE_ONLY]. "
+            "Mọi câu khác xuất hiện trong [CONTEXT_REFERENCE_ONLY] nhưng không có trong [TEXT_TO_TRANSLATE_ONLY] thì TUYỆT ĐỐI KHÔNG DỊCH."
         )
         if glossary_context:
             system_prompt += (
                 "\nKhi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
                 f"{glossary_context}\n"
             )
-        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong thẻ <text_to_translate>, không dịch thẻ <context_reference>, không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
+        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE_ONLY], không dịch khối [CONTEXT_REFERENCE_ONLY], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
     elif target_lang == "explain":
         lang_instruction = (
-            "Giải thích thuật ngữ công nghệ thông tin trong thẻ <term> bằng tiếng Việt. "
+            "Giải thích thuật ngữ công nghệ thông tin trong khối [TERM] bằng tiếng Việt. "
             "Cung cấp định nghĩa rõ ràng, phân tích vai trò của nó trong lập trình và hệ thống."
         )
         system_prompt = (
             "Bạn là một giảng viên khoa học máy tính giỏi. "
-            "Nhiệm vụ của bạn là giải thích thuật ngữ công nghệ nằm trong thẻ <term> bằng tiếng Việt. "
+            "Nhiệm vụ của bạn là giải thích thuật ngữ công nghệ nằm trong khối [TERM] bằng tiếng Việt. "
             "Tuyệt đối KHÔNG dịch nguyên văn đoạn văn bản, hãy giảng giải thuật ngữ. "
             "Cấu trúc phản hồi của bạn phải rõ ràng gồm:\n"
             "1. Định nghĩa ngắn gọn bằng tiếng Việt.\n"
@@ -155,12 +195,12 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         )
     elif target_lang == "summarize":
         lang_instruction = (
-            "Đọc hiểu đoạn văn bản công nghệ thông tin trong thẻ <document> và viết một bản tóm tắt cực kỳ ngắn gọn, súc tích bằng tiếng Việt. "
+            "Đọc hiểu đoạn văn bản công nghệ thông tin trong khối [DOCUMENT] và viết một bản tóm tắt cực kỳ ngắn gọn, súc tích bằng tiếng Việt. "
             "Tuyệt đối KHÔNG dịch nguyên văn, chỉ gạch đầu dòng tối đa 3-4 ý chính quan trọng nhất, mỗi ý không quá một câu ngắn."
         )
         system_prompt = (
             "Bạn là một trợ lý phân tích tài liệu kỹ thuật CNTT giỏi. "
-            "Nhiệm vụ của bạn là đọc văn bản nằm trong thẻ <document> và viết một bản tóm tắt CỰC KỲ NGẮN GỌN các ý chính dưới dạng gạch đầu dòng bằng tiếng Việt. "
+            "Nhiệm vụ của bạn là đọc văn bản nằm trong khối [DOCUMENT] và viết một bản tóm tắt CỰC KỲ NGẮN GỌN các ý chính dưới dạng gạch đầu dòng bằng tiếng Việt. "
             "Tuyệt đối KHÔNG dịch nguyên văn và KHÔNG viết dài dòng. "
             "Chỉ liệt kê tối đa 3-4 gạch đầu dòng cốt lõi, mỗi gạch đầu dòng chỉ gồm 1 câu cực kỳ ngắn gọn, tập trung vào thông tin quan trọng nhất."
         )
@@ -168,22 +208,22 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
     # Construct the messages for the chat template with strict tag wrapping
     if target_lang == "explain":
         user_content = (
-            f"<term>\n{text}\n</term>\n\n"
+            f"[TERM]\n{text}\n[/TERM]\n\n"
             f"Yêu cầu: {lang_instruction}\n"
             f"Giải thích chi tiết bằng tiếng Việt:\n"
             f"1. Định nghĩa: "
         )
     elif target_lang == "summarize":
         user_content = (
-            f"<document>\n{text}\n</document>\n\n"
+            f"[DOCUMENT]\n{text}\n[/DOCUMENT]\n\n"
             f"Yêu cầu: {lang_instruction}\n"
             f"Bản tóm tắt súc tích bằng tiếng Việt:\n"
             f"- "
         )
     else:
         user_content = (
-            f"<context_reference>\n{context}\n</context_reference>\n\n"
-            f"<text_to_translate>\n{text}\n</text_to_translate>\n\n"
+            f"[CONTEXT_REFERENCE_ONLY]\n{context}\n[/CONTEXT_REFERENCE_ONLY]\n\n"
+            f"[TEXT_TO_TRANSLATE_ONLY]\n{text}\n[/TEXT_TO_TRANSLATE_ONLY]\n\n"
             f"Instruction: {lang_instruction}\n"
             f"Result:"
         )
