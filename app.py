@@ -1934,7 +1934,7 @@ def payos_webhook():
         credits_to_add = amount
         print(f"[Webhook Debug] Credits to add: {credits_to_add} (from amount: {amount})")
         
-        user_ref = db.collection("users").document(uid)
+        user_ref = db.collection("user_info").document(uid)
         
         # Use a transaction to safely update credits
         @firestore.transactional
@@ -1942,7 +1942,7 @@ def payos_webhook():
             print(f"[Webhook Tx] Reading user profile for {uid} inside transaction...")
             user_snap = user_ref.get(transaction=transaction)
             if not user_snap.exists:
-                print(f"[Webhook Tx] User {uid} does not exist in 'users' collection. Creating with default + purchased credits.")
+                print(f"[Webhook Tx] User {uid} does not exist in 'user_info' collection. Creating with default + purchased credits.")
                 transaction.set(user_ref, {
                     "free_credit": 100000.0,
                     "purchased_credit": float(credits_to_add),
