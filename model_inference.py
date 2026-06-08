@@ -230,6 +230,13 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         detected_src = detect_language(text)
         print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
         
+        import json
+        print(f"  [HF RAW REQUEST] URL: {url}")
+        try:
+            print(f"  [HF RAW REQUEST] Payload:\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
+        except Exception:
+            print(f"  [HF RAW REQUEST] Payload: {payload}")
+            
         start_time = time.time()
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=90)
