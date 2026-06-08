@@ -210,6 +210,8 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         if model_path:
             if model_path.startswith("http://") or model_path.startswith("https://"):
                 url = model_path
+                if not (url.endswith("/generate") or url.endswith("/v1/chat/completions") or url.endswith("/chat/completions")):
+                    url = url.rstrip("/") + "/generate"
                 is_dedicated_endpoint = True
             else:
                 url = "https://router.huggingface.co/v1/chat/completions"
@@ -217,6 +219,7 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         else:
             if model_id == "qwen3":
                 url = "https://b9qx3l6qod0ti1kg.eu-west-1.aws.endpoints.huggingface.cloud"
+                # Keep it as is or append /generate if needed. Let's keep it as is.
                 is_dedicated_endpoint = True
             else:
                 url = "https://router.huggingface.co/v1/chat/completions"
