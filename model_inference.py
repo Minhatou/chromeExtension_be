@@ -331,7 +331,9 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
     # Return only the first non-empty line as a final safety fallback for translation
     if target_lang not in ("explain", "summarize"):
         lines = [l.strip() for l in result.split("\n") if l.strip()]
-        return lines[0] if lines else result
+        # Remove any structural tag lines copied/mimicked by the model (e.g. [CONTEXT], [/CONTEXT], [TEXT_TO_TRANSLATE])
+        filtered_lines = [l for l in lines if not (l.startswith("[") and l.endswith("]"))]
+        return filtered_lines[0] if filtered_lines else result
         
     return result
 
