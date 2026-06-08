@@ -35,7 +35,15 @@ def init_ai_models():
         print(f"[FIREBASE ERROR] Failed to initialize default AI_model entries: {e}")
 
 try:
-    cred = credentials.Certificate("serviceAccountKey.json")
+    import json
+    service_account_env = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if service_account_env:
+        service_account_info = json.loads(service_account_env)
+        cred = credentials.Certificate(service_account_info)
+        print("[FIREBASE] Initialized Firebase Admin SDK using Environment Variable")
+    else:
+        cred = credentials.Certificate("serviceAccountKey.json")
+        print("[FIREBASE] Initialized Firebase Admin SDK using local file")
     firebase_admin.initialize_app(cred)
     db = firestore.client()
     print("[FIREBASE] Connected to Cloud Firestore!")
