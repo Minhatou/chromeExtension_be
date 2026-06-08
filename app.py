@@ -1091,10 +1091,28 @@ def admin_delete_glossary():
 @app.route('/api/status', methods=['GET'])
 def status():
     """Check if the API, model, and Firebase are running."""
+    models_status = []
+    if db is not None:
+        try:
+            docs = db.collection("AI_model").stream()
+            for doc in docs:
+                m_data = doc.to_dict()
+                mid = m_data.get("model_id")
+                name = m_data.get("name", mid)
+                if mid:
+                    models_status.append({
+                        "model_id": mid,
+                        "name": name,
+                        "loaded": mid in loaded_models
+                    })
+        except Exception as e:
+            print(f"[Status Error] Failed to fetch models status: {e}")
+
     return jsonify({
         "status": "running",
         "model_loaded": len(loaded_models) > 0,
-        "firebase_connected": db is not None
+        "firebase_connected": db is not None,
+        "models": models_status
     })
 
 SEP = " ||| "   # Separator dùng trong batch translation
