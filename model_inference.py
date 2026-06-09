@@ -328,6 +328,10 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         result = re.sub(r'<think>[\s\S]*?</think>', '', result)
     else:
         result = result.replace("<think>", "").replace("</think>", "")
+    
+    # Strip any ending patterns like (Text_to_translate) or [TEXT_TO_TRANSLATE] case-insensitively
+    import re
+    result = re.sub(r'[\(\[\{]\s*(text_to_translate|context|translation)\s*[\)\]\}]', '', result, flags=re.IGNORECASE)
     result = result.strip()
 
     if target_lang == "explain" and not result.startswith("1. Định nghĩa:"):
