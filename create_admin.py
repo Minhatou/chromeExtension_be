@@ -9,11 +9,9 @@ from firebase_admin import credentials, auth
 cred = credentials.Certificate("serviceAccountKey.json")
 firebase_admin.initialize_app(cred)
 
-# ── CONFIG: Change these to your desired admin credentials ──────────────────
-ADMIN_EMAIL    = "nhatcreeper511@gmail.com"  # <-- Change to your email
-ADMIN_PASSWORD = "123456"             # <-- Change to your password
+ADMIN_EMAIL    = "nhatcreeper511@gmail.com"
+ADMIN_PASSWORD = "123456"
 ADMIN_NAME     = "Admin"
-# ─────────────────────────────────────────────────────────────────────────────
 
 def create_admin_user(email, password, display_name):
     try:

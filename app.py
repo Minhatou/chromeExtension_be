@@ -230,6 +230,24 @@ def get_user_glossary(user_id):
         return {}
 
 
+def get_system_glossary():
+    """Load approved system glossary from Firestore."""
+    if db is None:
+        return {}
+    try:
+        glossary = {}
+        docs = db.collection("system_glossary").stream()
+        for doc in docs:
+            data = doc.to_dict()
+            if "term" in data and "meaning" in data:
+                glossary[data["term"].strip().lower()] = data["meaning"].strip()
+        print(f"  [FIREBASE] Loaded {len(glossary)} system glossary entries")
+        return glossary
+    except Exception as e:
+        print(f"  [FIREBASE ERROR] Failed to load system glossary: {e}")
+        return {}
+
+
 def save_user_private_history(user_id, source, target):
     """Save translation entry to user's private history in Firestore."""
     if db is None or not user_id or user_id == "anonymous":
@@ -1150,8 +1168,29 @@ def translate_batch():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+    # Load and merge glossaries (user glossary overrides system glossary)
+    sys_glossary = get_system_glossary()
+    if not glossary:
+        user_glossary = get_user_glossary(user_id)
+    else:
+        user_glossary = {str(k).strip().lower(): str(v).strip() for k, v in glossary.items()}
+
+    merged_glossary = {}
+    merged_glossary.update(sys_glossary)
+    merged_glossary.update(user_glossary)
+    glossary = merged_glossary
+
     # Gom tất cả đoạn thành 1 chuỗi, cách nhau bằng SEP
     combined = SEP.join(t.strip() for t in texts)
+
+    # Console log the glossary status and matched terms in combined texts
+    matched_terms = [k for k in glossary if k in combined.lower()]
+    print(f"\n[BATCH GLOSSARY CHECK] Checked system ({len(sys_glossary)} entries) & user ({len(user_glossary)} entries) glossary.")
+    print(f"  Merged Glossary Size: {len(glossary)}")
+    if matched_terms:
+        print(f"  Matched Terms in batch texts: { {k: glossary[k] for k in matched_terms} }")
+    else:
+        print("  No glossary terms matched the batch texts.")
 
     print(f"\n[BATCH TRANSLATE] {len(texts)} segments, {len(combined)} chars total")
 
@@ -1253,9 +1292,26 @@ def translate():
     else:
         credits = {"free_credit": -1.0, "purchased_credit": -1.0, "total_credit": -1.0}
 
-    # If no glossary sent from client, auto-load from Firestore for logged-in users
+    # Load and merge glossaries (user glossary overrides system glossary)
+    sys_glossary = get_system_glossary()
     if not glossary:
-        glossary = get_user_glossary(user_id)
+        user_glossary = get_user_glossary(user_id)
+    else:
+        user_glossary = {str(k).strip().lower(): str(v).strip() for k, v in glossary.items()}
+
+    merged_glossary = {}
+    merged_glossary.update(sys_glossary)
+    merged_glossary.update(user_glossary)
+    glossary = merged_glossary
+
+    # Console log the glossary status and matched terms
+    matched_terms = [k for k in glossary if k in text.lower()]
+    print(f"\n[GLOSSARY CHECK] Checked system ({len(sys_glossary)} entries) & user ({len(user_glossary)} entries) glossary.")
+    print(f"  Merged Glossary Size: {len(glossary)}")
+    if matched_terms:
+        print(f"  Matched Terms: { {k: glossary[k] for k in matched_terms} }")
+    else:
+        print("  No glossary terms matched the text.")
 
     # Smart Cache Check - Skip inference if we already have this translation
     if target_lang not in ('explain', 'summarize'):
