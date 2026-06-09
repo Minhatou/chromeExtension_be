@@ -853,6 +853,7 @@ def recharge_tokens():
             "package_id": package_id,
             "amount": added_credit,
             "payment_method": payment_method,
+            "status": "completed",
             "timestamp": firestore.SERVER_TIMESTAMP
         })
         
@@ -1758,6 +1759,8 @@ def admin_list_transactions():
         transactions = []
         for doc in docs:
             d = doc.to_dict()
+            if d.get("status") == "pending":
+                continue
             d['id'] = doc.id
             ts = d.get('timestamp')
             d['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
@@ -1769,6 +1772,8 @@ def admin_list_transactions():
             transactions = []
             for doc in docs:
                 d = doc.to_dict()
+                if d.get("status") == "pending":
+                    continue
                 d['id'] = doc.id
                 ts = d.get('timestamp')
                 d['timestamp'] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
@@ -1852,8 +1857,8 @@ def create_payment():
     return_url = data.get('return_url', "https://hvmndoan-production.up.railway.app/src/dashboard/index.html")
     cancel_url = data.get('cancel_url', "https://hvmndoan-production.up.railway.app/src/dashboard/index.html")
     
-    # Store order info in Firestore
-    db.collection("orders").document(str(order_code)).set({
+    # Store pending transaction info in Firestore
+    db.collection("transactions").document(str(order_code)).set({
         "uid": uid,
         "amount": amount,
         "package_id": package_id,
@@ -1929,26 +1934,26 @@ def payos_webhook():
             
         print(f"[Webhook Debug] Extracted order_code: {order_code}, amount: {amount}")
         
-        # Get order details from Firestore
-        order_ref = db.collection("orders").document(order_code)
+        # Get transaction details from Firestore
+        order_ref = db.collection("transactions").document(order_code)
         order_snap = order_ref.get()
-        print(f"[Webhook Debug] Firestore check for order {order_code}: exists={order_snap.exists}")
+        print(f"[Webhook Debug] Firestore check for transaction {order_code}: exists={order_snap.exists}")
         if not order_snap.exists:
-            print(f"[Webhook Info] Order {order_code} not found in collection 'orders'. This might be a test/dummy webhook from PayOS registration. Returning 200.")
-            return jsonify({"success": True, "message": "Order not found but signature verified (possibly test/dummy webhook)"}), 200
+            print(f"[Webhook Info] Transaction {order_code} not found in collection 'transactions'. This might be a test/dummy webhook from PayOS registration. Returning 200.")
+            return jsonify({"success": True, "message": "Transaction not found but signature verified (possibly test/dummy webhook)"}), 200
             
         order_info = order_snap.to_dict()
-        print(f"[Webhook Debug] Order info from DB: {order_info}")
+        print(f"[Webhook Debug] Transaction info from DB: {order_info}")
         if order_info.get('status') == 'completed':
-            print(f"[Webhook Info] Order {order_code} status is already 'completed'. Skipping credit addition.")
+            print(f"[Webhook Info] Transaction {order_code} status is already 'completed'. Skipping credit addition.")
             return jsonify({"success": True, "message": "Already processed"}), 200
             
         uid = order_info.get('uid')
         package_id = order_info.get('package_id')
-        print(f"[Webhook Debug] Order belongs to user (uid): {uid}, package_id: {package_id}")
+        print(f"[Webhook Debug] Transaction belongs to user (uid): {uid}, package_id: {package_id}")
         if not uid:
-            print("[Webhook Error] No uid found in order info!")
-            return jsonify({"error": "No uid in order info"}), 400
+            print("[Webhook Error] No uid found in transaction info!")
+            return jsonify({"error": "No uid in transaction info"}), 400
             
         # 1 VNĐ = 1 Credit
         credits_to_add = amount
@@ -1983,30 +1988,20 @@ def payos_webhook():
                     "purchased_credit": new_purchased,
                     "total_credit": new_total
                 })
-                
-            # Log transaction
-            tx_ref = db.collection("transactions").document()
-            print(f"[Webhook Tx] Creating transaction log in 'transactions' collection...")
-            transaction.set(tx_ref, {
-                "uid": uid,
-                "amount": amount,
-                "package_id": package_id,
-                "payment_method": "payos",
-                "timestamp": firestore.SERVER_TIMESTAMP
-            })
             
         transaction = db.transaction()
         print("[Webhook Debug] Starting Firestore transaction...")
         update_credits_tx(transaction, user_ref, credits_to_add, amount, package_id)
         print("[Webhook Debug] Firestore transaction completed successfully!")
         
-        # Update order status to completed
-        print(f"[Webhook Debug] Updating order {order_code} status to 'completed'...")
+        # Update transaction status to completed
+        print(f"[Webhook Debug] Updating transaction {order_code} status to 'completed'...")
         order_ref.update({
             "status": "completed",
+            "payment_method": "payos",
             "completed_at": firestore.SERVER_TIMESTAMP
         })
-        print(f"[Webhook Debug] Order {order_code} status successfully updated to completed.")
+        print(f"[Webhook Debug] Transaction {order_code} status successfully updated to completed.")
         
         return jsonify({"success": True, "message": "Payment verified and credited"}), 200
     except Exception as e:
