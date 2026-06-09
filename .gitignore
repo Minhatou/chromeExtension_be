@@ -94,3 +94,8 @@ desktop.ini
 *.bak
 *.orig
 /serviceAccountKey.json
+
+# ─── Binaries ─────────────────────────────────────────────────────────────────
+bin/
+**/bin/
+
