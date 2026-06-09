@@ -1997,34 +1997,29 @@ def payos_webhook():
         # Get transaction details from Firestore
         order_ref = db.collection("transactions").document(order_code)
         order_snap = order_ref.get()
-        print(f"[Webhook Debug] Firestore check for transaction {order_code}: exists={order_snap.exists}")
         if not order_snap.exists:
             print(f"[Webhook Info] Transaction {order_code} not found in collection 'transactions'. This might be a test/dummy webhook from PayOS registration. Returning 200.")
             return jsonify({"success": True, "message": "Transaction not found but signature verified (possibly test/dummy webhook)"}), 200
             
         order_info = order_snap.to_dict()
-        print(f"[Webhook Debug] Transaction info from DB: {order_info}")
         if order_info.get('status') == 'completed':
             print(f"[Webhook Info] Transaction {order_code} status is already 'completed'. Skipping credit addition.")
             return jsonify({"success": True, "message": "Already processed"}), 200
             
         uid = order_info.get('uid')
         package_id = order_info.get('package_id')
-        print(f"[Webhook Debug] Transaction belongs to user (uid): {uid}, package_id: {package_id}")
         if not uid:
             print("[Webhook Error] No uid found in transaction info!")
             return jsonify({"error": "No uid in transaction info"}), 400
             
         # 1 VNĐ = 1 Credit
         credits_to_add = amount
-        print(f"[Webhook Debug] Credits to add: {credits_to_add} (from amount: {amount})")
         
         user_ref = db.collection("user_info").document(uid)
         
         # Use a transaction to safely update credits
         @firestore.transactional
         def update_credits_tx(transaction, user_ref, credits_to_add, amount, package_id):
-            print(f"[Webhook Tx] Reading user profile for {uid} inside transaction...")
             user_snap = user_ref.get(transaction=transaction)
             if not user_snap.exists:
                 print(f"[Webhook Tx] User {uid} does not exist in 'user_info' collection. Creating with default + purchased credits.")
@@ -2039,33 +2034,24 @@ def payos_webhook():
                 user_data = user_snap.to_dict()
                 current_purchased = user_data.get("purchased_credit", 0.0)
                 current_free = user_data.get("free_credit", 100000.0)
-                print(f"[Webhook Tx] Current user credit state: free={current_free}, purchased={current_purchased}")
                 
                 new_purchased = current_purchased + float(credits_to_add)
                 new_total = current_free + new_purchased
-                print(f"[Webhook Tx] Updating user {uid} credit state to: purchased={new_purchased}, total={new_total}")
                 transaction.update(user_ref, {
                     "purchased_credit": new_purchased,
                     "total_credit": new_total
                 })
             
         transaction = db.transaction()
-        print("[Webhook Debug] Starting Firestore transaction...")
         update_credits_tx(transaction, user_ref, credits_to_add, amount, package_id)
-        print("[Webhook Debug] Firestore transaction completed successfully!")
         
         # Update transaction status to completed
-        print(f"\n[PAYMENT WEBHOOK SUCCESS] Cập nhật trạng thái giao dịch nạp tiền thành công:")
-        print(f"  - Collection: 'transactions'")
-        print(f"  - Document ID (order_code): {order_code}")
-        print(f"  - Fields updated: status='completed', payment_method='payos', completed_at=SERVER_TIMESTAMP")
-        print(f"  - Số dư credit của User '{uid}' đã được cộng thêm {amount} VNĐ vào collection 'user_info'.")
+        print(f"[PAYMENT WEBHOOK SUCCESS] Giao dịch {order_code} thành công: Đã cộng {amount} VNĐ cho User '{uid}'.")
         order_ref.update({
             "status": "completed",
             "payment_method": "payos",
             "completed_at": firestore.SERVER_TIMESTAMP
         })
-        print(f"[PAYMENT WEBHOOK SUCCESS] Giao dịch {order_code} đã hoàn tất cập nhật.")
         
         return jsonify({"success": True, "message": "Payment verified and credited"}), 200
     except Exception as e:

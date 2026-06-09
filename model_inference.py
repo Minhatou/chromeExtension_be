@@ -249,16 +249,6 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
                 "temperature": 0.1
             }
             print(f"  [ONLINE MODEL] Calling chat completions endpoint ({resolved_model_name}) via {url}...")
-        
-        detected_src = detect_language(text)
-        print(f"  [ONLINE MODEL] detected_src={detected_src} → target={target_lang}")
-        
-        import json
-        print(f"  [HF RAW REQUEST] URL: {url}")
-        try:
-            print(f"  [HF RAW REQUEST] Payload:\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
-        except Exception:
-            print(f"  [HF RAW REQUEST] Payload: {payload}")
             
         start_time = time.time()
         try:
