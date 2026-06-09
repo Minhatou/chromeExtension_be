@@ -1858,6 +1858,10 @@ def create_payment():
     cancel_url = data.get('cancel_url', "https://hvmndoan-production.up.railway.app/src/dashboard/index.html")
     
     # Store pending transaction info in Firestore
+    print(f"\n[PAYMENT CREATE] Ghi nhận giao dịch đang chờ (pending) vào Firestore:")
+    print(f"  - Collection: 'transactions'")
+    print(f"  - Document ID (order_code): {order_code}")
+    print(f"  - Data: {{'uid': '{uid}', 'amount': {amount}, 'package_id': '{package_id}', 'status': 'pending'}}")
     db.collection("transactions").document(str(order_code)).set({
         "uid": uid,
         "amount": amount,
@@ -1995,13 +1999,17 @@ def payos_webhook():
         print("[Webhook Debug] Firestore transaction completed successfully!")
         
         # Update transaction status to completed
-        print(f"[Webhook Debug] Updating transaction {order_code} status to 'completed'...")
+        print(f"\n[PAYMENT WEBHOOK SUCCESS] Cập nhật trạng thái giao dịch nạp tiền thành công:")
+        print(f"  - Collection: 'transactions'")
+        print(f"  - Document ID (order_code): {order_code}")
+        print(f"  - Fields updated: status='completed', payment_method='payos', completed_at=SERVER_TIMESTAMP")
+        print(f"  - Số dư credit của User '{uid}' đã được cộng thêm {amount} VNĐ vào collection 'user_info'.")
         order_ref.update({
             "status": "completed",
             "payment_method": "payos",
             "completed_at": firestore.SERVER_TIMESTAMP
         })
-        print(f"[Webhook Debug] Transaction {order_code} status successfully updated to completed.")
+        print(f"[PAYMENT WEBHOOK SUCCESS] Giao dịch {order_code} đã hoàn tất cập nhật.")
         
         return jsonify({"success": True, "message": "Payment verified and credited"}), 200
     except Exception as e:
