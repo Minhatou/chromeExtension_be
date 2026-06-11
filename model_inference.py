@@ -241,7 +241,10 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             }
             print(f"  [ONLINE MODEL] Calling TGI endpoint: {url}")
         else:
-            resolved_model_name = model_path if (model_path and not model_path.startswith("http")) else f"minhatou/{model_id.lower()}"
+            if is_dedicated_endpoint:
+                resolved_model_name = "tgi"
+            else:
+                resolved_model_name = model_path if (model_path and not model_path.startswith("http")) else f"minhatou/{model_id.lower()}"
             payload = {
                 "model": resolved_model_name,
                 "messages": messages,
