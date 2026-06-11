@@ -97,29 +97,29 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
     # Rule B: Prompt Context Enforced (only for non-explain and non-summarize modes)
     glossary_context = ""
     if target_lang not in ("explain", "summarize") and glossary and glossary_mode in ("both", "ai"):
-        glossary_items = [f"- \"{k}\" dịch là \"{v}\"" for k, v in glossary.items() if str(k).strip().lower() in text.lower()]
-        if glossary_items:
-            glossary_context = "\n".join(glossary_items)
-            print(f"  [GLOSSARY] Enforced glossary prompt context:\n{glossary_context}")
+        detected_glossary = {}
+        text_lower = text.lower()
+        for k, v in glossary.items():
+            k_clean = str(k).strip().lower()
+            if f" {k_clean} " in f" {text_lower} " or text_lower.startswith(k_clean) or text_lower.endswith(k_clean):
+                detected_glossary[str(k).strip()] = str(v).strip()
+        
+        if detected_glossary:
+            import json as _json
+            glossary_context = _json.dumps(detected_glossary, ensure_ascii=False)
+            print(f"  [GLOSSARY] Enforced glossary prompt context (JSON): {glossary_context}")
 
     if target_lang == "vietnamese":
-        lang_instruction = (
-            "Translate the given text from English into Vietnamese. "
-            "Use accurate IT-specific Vietnamese terminology when the context is technical."
-        )
         system_prompt = (
             "Bạn là một biên dịch viên chuyên nghiệp về công nghệ thông tin. "
-            "Nhiệm vụ cốt lõi của bạn là CHỈ dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Việt. "
-            "Khối [CONTEXT] chỉ nhằm mục đích cung cấp ngữ cảnh, tuyệt đối KHÔNG dịch bất kỳ câu nào trong khối [CONTEXT]. "
-            "Quy tắc nghiêm ngặt: Hãy so sánh kỹ hai khối [TEXT_TO_TRANSLATE] và [CONTEXT]. Bạn chỉ được dịch câu chữ xuất hiện trong [TEXT_TO_TRANSLATE]. "
-            "Mọi câu khác xuất hiện trong [CONTEXT] nhưng không có trong [TEXT_TO_TRANSLATE] thì TUYỆT ĐỐI KHÔNG DỊCH."
+            "Nhiệm vụ của bạn là dịch đoạn văn bản nằm trong khối [TEXT_TO_TRANSLATE] sang tiếng Việt. "
+            "Khối [CONTEXT/GLOSSARY] chứa các thông tin ngữ cảnh hoặc các cặp từ gợi ý dạng JSON. "
+            "Nếu có các cặp thuật ngữ được định nghĩa trong [CONTEXT/GLOSSARY], hãy bắt buộc ưu tiên sử dụng "
+            "chúng để dịch các từ tương ứng trong [TEXT_TO_TRANSLATE]. "
+            "Tuyệt đối KHÔNG được dịch các câu trong khối [CONTEXT/GLOSSARY] hay đưa bất kỳ nội dung nào khác ngoài "
+            "bản dịch trực tiếp của [TEXT_TO_TRANSLATE] vào kết quả. "
+            "Hãy CHỈ trả về bản dịch trực tiếp, KHÔNG giải thích, không thêm tiêu đề hay từ ngữ thừa nào khác."
         )
-        if glossary_context:
-            system_prompt += (
-                "\nKhi dịch, nếu gặp các từ khóa sau, bạn bắt buộc phải dịch chúng theo đúng định nghĩa này:\n"
-                f"{glossary_context}\n"
-            )
-        system_prompt += "\nHãy CHỈ trả về bản dịch trực tiếp của văn bản trong khối [TEXT_TO_TRANSLATE], không dịch khối [CONTEXT], không giải thích, không thêm tiêu đề, nhãn hay từ ngữ thừa nào khác."
     elif target_lang == "english":
         lang_instruction = (
             "Translate the given text from Vietnamese into English. "
@@ -160,7 +160,7 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             "Bạn là một trợ lý phân tích tài liệu kỹ thuật CNTT giỏi. "
             "Nhiệm vụ của bạn là đọc văn bản nằm trong khối [DOCUMENT] và viết một bản tóm tắt CỰC KỲ NGẮN GỌN các ý chính dưới dạng gạch đầu dòng bằng tiếng Việt. "
             "Tuyệt đối KHÔNG dịch nguyên văn và KHÔNG viết dài dòng. "
-            "Chỉ liệt kê tối đa 3-4 gạch đầu dòng cốt lõi, mỗi gạch đầu dòng chỉ gồm 1 câu cực kỳ ngắn gọn, tập trung vào thông tin quan trọng nhất."
+            "Chỉ liệt kê tối đa 3-4 gạch đầu dòng cốt lỗi, mỗi gạch đầu dòng chỉ gồm 1 câu cực kỳ ngắn gọn, tập trung vào thông tin quan trọng nhất."
         )
     
     # Construct the messages for the chat template with strict tag wrapping
@@ -180,10 +180,9 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
         )
     else:
         user_content = (
-            f"[CONTEXT]\n{context}\n[/CONTEXT]\n\n"
+            f"[CONTEXT/GLOSSARY]\n{glossary_context if glossary_context else context}\n[/CONTEXT/GLOSSARY]\n\n"
             f"[TEXT_TO_TRANSLATE]\n{text}\n[/TEXT_TO_TRANSLATE]\n\n"
-            f"Instruction: {lang_instruction}\n"
-            f"Result:"
+            f"Instruction: Dịch đoạn văn bản trên sang tiếng Việt. Ưu tiên sử dụng các cặp thuật ngữ IT được định nghĩa trong khối CONTEXT/GLOSSARY nếu có.\nResult:"
         )
     # Format as a Qwen2 chat template string manually
     prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_content}<|im_end|>\n<|im_start|>assistant\n"
