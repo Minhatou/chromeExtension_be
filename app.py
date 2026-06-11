@@ -93,11 +93,14 @@ def get_model_and_tokenizer(model_id):
     global loaded_models, loaded_tokenizers
     
     path = None
+    db_model_id = model_id
     if db is not None:
         try:
             doc = db.collection("AI_model").document(model_id).get()
             if doc.exists:
-                path = doc.to_dict().get("path")
+                doc_data = doc.to_dict()
+                path = doc_data.get("path")
+                db_model_id = doc_data.get("model_id", model_id)
         except Exception as e:
             print(f"[FIREBASE ERROR] Failed to fetch path for model {model_id}: {e}")
             
@@ -115,7 +118,7 @@ def get_model_and_tokenizer(model_id):
         loaded_tokenizers[model_id] = t
         print(f"[DYNAMIC LOAD] Model {model_id} loaded successfully!")
         
-    return loaded_models[model_id], loaded_tokenizers[model_id], path
+    return loaded_models[model_id], loaded_tokenizers[model_id], path, db_model_id
 
 
 # ── Firebase Helper Functions ─────────────────────────────────────────────────
@@ -1164,7 +1167,7 @@ def translate_batch():
         return jsonify({"error": "Yêu cầu đăng nhập"}), 401
 
     try:
-        model, tokenizer, path = get_model_and_tokenizer(model_id)
+        model, tokenizer, path, db_model_id = get_model_and_tokenizer(model_id)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1198,7 +1201,7 @@ def translate_batch():
         try:
             result = generate_translation(
                 model, tokenizer, combined, '',
-                target_lang, glossary, glossary_mode, model_id, model_path=path
+                target_lang, glossary, glossary_mode, db_model_id, model_path=path
             )
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -1248,7 +1251,7 @@ def translate():
 
     # 1. Dynamic Model Load
     try:
-        model, tokenizer, path = get_model_and_tokenizer(model_id)
+        model, tokenizer, path, db_model_id = get_model_and_tokenizer(model_id)
     except Exception as load_err:
         return jsonify({"error": f"Failed to load model {model_id}: {str(load_err)}"}), 500
 
@@ -1341,7 +1344,7 @@ def translate():
     with inference_lock:
         try:
             _t0 = _time_module.perf_counter()
-            translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode, model_id, model_path=path)
+            translation = generate_translation(model, tokenizer, text, context, target_lang, glossary, glossary_mode, db_model_id, model_path=path)
             _inference_elapsed = _time_module.perf_counter() - _t0
             _total_elapsed = _time_module.perf_counter() - _request_start
             _chars_per_sec = len(translation) / _inference_elapsed if _inference_elapsed > 0 else 0
