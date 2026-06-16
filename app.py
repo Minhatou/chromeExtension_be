@@ -1464,7 +1464,7 @@ def ocr_image():
         
         # Prepare the payload with data URL image format for Qwen2.5-VL
         payload = {
-            "model": "Qwen/Qwen2.5-VL-7B-Instruct:hyperbolic",
+            "model": "Qwen/Qwen3-VL-8B-Instruct:novita",
             "messages": [
                 {
                     "role": "user",
