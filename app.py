@@ -1427,38 +1427,86 @@ threading.Thread(target=preload_easyocr_in_background, daemon=True).start()
 
 @app.route('/api/ocr', methods=['POST'])
 def ocr_image():
-    """OCR an image sent as base64 and return extracted text using EasyOCR."""
-    import base64 as _b64, io
-    from PIL import Image
-    import numpy as np
+    """OCR an image sent as base64 and return extracted text using Qwen2.5-VL via Hugging Face Router API."""
+    import base64 as _b64
+    import requests
 
     data = request.json
     if not data or 'image' not in data:
         return jsonify({"error": "Missing image data"}), 400
 
     image_b64 = data['image']
+    # If the base64 string contains metadata prefix, strip it
     if ',' in image_b64:
         image_b64 = image_b64.split(',', 1)[1]
 
+    # Resolve HF_TOKEN
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        try:
+            with open(".env", "r") as f:
+                for line in f:
+                    if line.startswith("HF_TOKEN="):
+                        hf_token = line.strip().split("=", 1)[1]
+        except Exception:
+            pass
+
+    if not hf_token:
+        print("[OCR ERROR] HF_TOKEN is not configured!")
+        return jsonify({"error": "Không thể thực hiện OCR do thiếu HF_TOKEN cấu hình trên server"}), 500
+
     try:
-        img_bytes = _b64.b64decode(image_b64)
-        img = Image.open(io.BytesIO(img_bytes))
-        img_np = np.array(img)
+        url = "https://router.huggingface.co/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {hf_token}"
+        }
+        
+        # Prepare the payload with data URL image format for Qwen2.5-VL
+        payload = {
+            "model": "Qwen/Qwen2.5-VL-7B-Instruct:hyperbolic",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Hãy đọc và trích xuất toàn bộ chữ (văn bản) xuất hiện trong hình ảnh này sang dạng chuỗi văn bản. "
+                                "Giữ nguyên định dạng xuống dòng hợp lý của các đoạn văn. "
+                                "Tuyệt đối CHỈ trả về phần văn bản trích xuất được từ ảnh, KHÔNG được thêm lời giới thiệu, giải thích, hay bất kỳ bình luận nào khác."
+                            )
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_b64}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
 
-        # Lazy load the EasyOCR reader
-        reader = get_easyocr_reader()
+        print("[OCR Qwen2.5-VL] Sending request to Hugging Face Router...")
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        
+        if response.status_code != 200:
+            print(f"[OCR ERROR] API error: {response.status_code} - {response.text}")
+            return jsonify({"error": f"Lỗi API trích xuất chữ: {response.text}"}), response.status_code
 
-        # Run OCR
-        results = reader.readtext(img_np, detail=0)
-        text = " ".join(results).strip()
+        res_data = response.json()
+        extracted_text = res_data["choices"][0]["message"]["content"].strip()
 
-        if not text:
-            return jsonify({"error": "Không tìm thấy chữ trong ảnh"}), 422
+        if not extracted_text:
+            return jsonify({"error": "Không tìm thấy chữ trong ảnh hoặc mô hình trả về chuỗi rỗng"}), 422
 
-        print(f"[EasyOCR] Extracted {len(text)} chars from image")
-        return jsonify({"text": text})
+        print(f"[OCR Qwen2.5-VL] Extracted {len(extracted_text)} chars from image")
+        return jsonify({"text": extracted_text})
     except Exception as e:
-        print(f"[EasyOCR ERROR] {e}")
+        import traceback
+        print(f"[OCR Qwen2.5-VL ERROR] Exception occurred:")
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
