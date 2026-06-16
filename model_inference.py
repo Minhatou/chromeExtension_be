@@ -379,12 +379,25 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             result = result[len(p):].strip()
             break
 
-    # Return only the first non-empty line as a final safety fallback for translation
+    # Filter out structural tag lines copied/mimicked by the model, but preserve paragraphs
     if target_lang not in ("explain", "summarize"):
-        lines = [l.strip() for l in result.split("\n") if l.strip()]
-        # Remove any structural tag lines copied/mimicked by the model (e.g. [CONTEXT], [/CONTEXT], [TEXT_TO_TRANSLATE])
-        filtered_lines = [l for l in lines if not (l.startswith("[") and l.endswith("]"))]
-        return filtered_lines[0] if filtered_lines else result
+        filtered_lines = []
+        for line in result.split("\n"):
+            line_strip = line.strip()
+            # Skip empty lines but keep one if it acts as a paragraph separator
+            if not line_strip:
+                filtered_lines.append("")
+                continue
+            # Remove lines that look like structural tags (e.g. [TEXT_TO_TRANSLATE])
+            if line_strip.startswith("[") and line_strip.endswith("]"):
+                continue
+            filtered_lines.append(line)
+        
+        # Join lines back and clean up extra consecutive newlines
+        cleaned_result = "\n".join(filtered_lines).strip()
+        import re
+        cleaned_result = re.sub(r'\n{3,}', '\n\n', cleaned_result)
+        return cleaned_result
         
     return result
 
