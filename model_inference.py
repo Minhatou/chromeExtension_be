@@ -256,6 +256,10 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             }
             print(f"  [ONLINE MODEL] Calling chat completions endpoint ({resolved_model_name}) via {url}...")
             
+        print(f"  [ONLINE MODEL REQUEST DETAIL] URL: {url}")
+        print(f"  [ONLINE MODEL REQUEST DETAIL] Headers: {{k: ('***' if k.lower() == 'authorization' else v) for k, v in headers.items()}}")
+        print(f"  [ONLINE MODEL REQUEST DETAIL] Payload: {payload}")
+        
         start_time = time.time()
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=90)
