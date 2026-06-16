@@ -248,9 +248,33 @@ def generate_translation(model, tokenizer, text, context="", target_lang="auto",
             if resolved_model_name in ("minhatou/qwen2-3b", "tgi"):
                 resolved_model_name = "minhatou/qwen2.5_3b_1106"
                 
+            chat_messages = []
+            for msg in messages:
+                if msg["role"] == "user":
+                    content = msg["content"]
+                    # Strip common trailing prompt prefixes/markers
+                    if content.endswith("\nResult:"):
+                        content = content[:-8].strip()
+                    elif content.endswith("\n- "):
+                        content = content[:-3].strip()
+                    elif content.endswith("\n-"):
+                        content = content[:-2].strip()
+                    elif content.endswith("\n1. Định nghĩa: "):
+                        content = content[:-16].strip()
+                    elif content.endswith("\n1. Định nghĩa:"):
+                        content = content[:-15].strip()
+                    
+                    if content.endswith("Bản tóm tắt súc tích bằng tiếng Việt:"):
+                        content = content[:-38].strip()
+                    elif content.endswith("Giải thích chi tiết bằng tiếng Việt:"):
+                        content = content[:-36].strip()
+                    chat_messages.append({"role": "user", "content": content})
+                else:
+                    chat_messages.append(msg)
+
             payload = {
                 "model": resolved_model_name,
-                "messages": messages,
+                "messages": chat_messages,
                 "max_tokens": 1024 if target_lang in ("explain", "summarize") else 512,
                 "temperature": 0.1
             }
